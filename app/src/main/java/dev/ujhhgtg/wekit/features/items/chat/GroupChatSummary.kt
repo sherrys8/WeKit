@@ -467,7 +467,7 @@ object GroupChatSummary : SwitchFeature(), WeChatMessageContextMenuApi.IMenuItem
                         scope.launch {
                             runCatching {
                                 withContext(Dispatchers.IO) {
-                                    renderRankingScreenshot(groupName, periodLabel, entries, total)
+                                    GroupScreenshotRenderer.renderRankingScreenshot(groupName, periodLabel, entries, total)
                                 }
                             }.onSuccess { path ->
                                 screenshotToSend = path to rankingScreenshotLabel
@@ -570,7 +570,7 @@ object GroupChatSummary : SwitchFeature(), WeChatMessageContextMenuApi.IMenuItem
                                     runCatching {
                                         val stats = statsState?.takeIf { it.first == timeRange }?.second
                                         val memberCount = loadGroupMembersMap(talker).size
-                                        renderAiSummaryScreenshot(
+                                        GroupScreenshotRenderer.renderAiSummaryScreenshot(
                                             groupName = groupName,
                                             summary = report!!,
                                             reportDays = generatedReportDays,

@@ -43,7 +43,7 @@ internal object GroupScreenshotRenderer {
     private fun buildBodyLayout(summary: String, paint: TextPaint, width: Int): StaticLayout {
         val text = summary.orEmpty()
         val styled = SpannableStringBuilder(text)
-        val lines = text.split("\n", -1)
+        val lines = text.split("\n")
         var offset = 0
         val red = Color.rgb(198, 40, 40)
         val numerals = "一二三四五六七八九十"
