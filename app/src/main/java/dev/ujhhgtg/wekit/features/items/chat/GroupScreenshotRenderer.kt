@@ -137,8 +137,8 @@ internal object GroupScreenshotRenderer {
             Color.rgb(255, 235, 241),
         )
         val backgroundStops = floatArrayOf(0.0f, 0.34f, 0.72f, 1.0f)
-        paint.shader = LinearGradient(0, 0, width.toFloat(), height.toFloat(), backgroundColors, backgroundStops, Shader.TileMode.CLAMP)
-        canvas.drawRect(0, 0, width.toFloat(), height.toFloat(), paint)
+        paint.shader = LinearGradient(0f, 0f, width.toFloat(), height.toFloat(), backgroundColors, backgroundStops, Shader.TileMode.CLAMP)
+        canvas.drawRect(0f, 0f, width.toFloat(), height.toFloat(), paint)
         paint.shader = null
 
         val card = RectF(cardMargin.toFloat(), headerHeight.toFloat(), (width - cardMargin).toFloat(), (height - 38).toFloat())
@@ -203,7 +203,7 @@ internal object GroupScreenshotRenderer {
         val paint = Paint(Paint.ANTI_ALIAS_FLAG)
 
         paint.color = Color.rgb(255, 248, 240)
-        canvas.drawRect(0, 0, width.toFloat(), height.toFloat(), paint)
+        canvas.drawRect(0f, 0f, width.toFloat(), height.toFloat(), paint)
 
         paint.color = Color.rgb(245, 124, 0)
         canvas.drawRoundRect(RectF(36f, 34f, (width - 36).toFloat(), 210f), 28f, 28f, paint)
