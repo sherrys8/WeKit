@@ -60,6 +60,7 @@ import dev.ujhhgtg.wekit.ui.content.Button
 import dev.ujhhgtg.wekit.ui.content.TextButton
 import dev.ujhhgtg.wekit.utils.android.showToast
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.nio.file.Path
@@ -256,12 +257,14 @@ internal fun LowActivityMembersDialog(
 
 /**
  * 截图发送目标群聊选择弹窗：生成截图后选择接收群聊。
+ * 群列表按显示名忽略大小写排序，当前群置顶（对应 Hchat 截图群选择）。
  * @param contentName 内容名（「总结」/「排行」），用于文案
  */
 @Composable
 internal fun GroupChoiceScreenshotDialog(
     screenshotPath: Path,
     contentName: String,
+    talker: String,
     onDismiss: () -> Unit,
 ) {
     var query by remember { mutableStateOf("") }
@@ -271,8 +274,11 @@ internal fun GroupChoiceScreenshotDialog(
     LaunchedEffect(Unit) {
         groups = withContext(Dispatchers.IO) {
             WeDatabaseApi.getGroups()
-                .map { it.wxId to it.nickname.ifEmpty { it.wxId } }
-                .sortedBy { it.second.lowercase() }
+                .map { it.wxId to (it.displayName.ifEmpty { it.nickname }.ifEmpty { it.wxId }) }
+                .sortedWith(
+                    compareByDescending<Pair<String, String>> { it.first == talker }
+                        .thenBy { it.second.lowercase() },
+                )
         }
     }
 
@@ -340,6 +346,13 @@ internal fun GroupChoiceScreenshotDialog(
                                             showToast(sentToast)
                                         } else {
                                             showToast(failedToast)
+                                        }
+                                        // 发送成功后 60 秒删除临时截图（对应 Hchat）
+                                        scope.launch {
+                                            delay(60_000)
+                                            withContext(Dispatchers.IO) {
+                                                runCatching { java.nio.file.Files.deleteIfExists(screenshotPath) }
+                                            }
                                         }
                                         onDismiss()
                                     }

@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
@@ -42,6 +43,7 @@ import androidx.compose.ui.unit.dp
 import com.composables.icons.materialsymbols.MaterialSymbols
 import com.composables.icons.materialsymbols.outlined.Auto_awesome
 import com.composables.icons.materialsymbols.outlined.Chat
+import com.composables.icons.materialsymbols.outlined.Chips
 import com.composables.icons.materialsymbols.outlined.Expand_less
 import com.composables.icons.materialsymbols.outlined.Expand_more
 import com.composables.icons.materialsymbols.outlined.Extension
@@ -53,7 +55,6 @@ import com.composables.icons.materialsymbols.outlined.History
 import com.composables.icons.materialsymbols.outlined.Notes
 import com.composables.icons.materialsymbols.outlined.Schedule
 import com.composables.icons.materialsymbols.outlined.Sunny
-import dev.ujhhgtg.wekit.features.api.core.models.MessageType
 
 // 设计图固定强调色（进度条/圆点等小元素，深浅色主题下均可读）
 private val BarYellow = Color(0xFFFFC107)
@@ -100,6 +101,7 @@ private fun CoreMetricItem(icon: ImageVector, value: Int, labelRes: Int, modifie
 @Composable
 internal fun GroupStatsCharts(stats: GroupStats) {
     var rankCollapsed by remember { mutableStateOf(true) }
+    var wordsCollapsed by remember { mutableStateOf(true) }
     var routineCollapsed by remember { mutableStateOf(true) }
     var emotionCollapsed by remember { mutableStateOf(true) }
     var lengthCollapsed by remember { mutableStateOf(true) }
@@ -108,6 +110,10 @@ internal fun GroupStatsCharts(stats: GroupStats) {
 
     StatCard(MaterialSymbols.Outlined.Format_list_numbered, R.string.ui_group_stat_rank_title, rankCollapsed, { rankCollapsed = !rankCollapsed }) {
         RankList(stats)
+    }
+    Spacer(Modifier.height(12.dp))
+    StatCard(MaterialSymbols.Outlined.Chips, R.string.ui_group_stat_words_title, wordsCollapsed, { wordsCollapsed = !wordsCollapsed }) {
+        WordCloud(stats)
     }
     Spacer(Modifier.height(12.dp))
     StatCard(MaterialSymbols.Outlined.Schedule, R.string.ui_group_stat_routine_title, routineCollapsed, { routineCollapsed = !routineCollapsed }) {
@@ -216,18 +222,18 @@ private fun RankList(stats: GroupStats) {
 
 private data class RoutineItem(val titleRes: Int, val timeText: String, val icon: ImageVector, val container: Color, val onContainer: Color)
 
-/** 聊天作息图鉴：2x2 四宫格（时段计数） */
+/** 聊天作息图鉴：2x2 四宫格（时段计数，对应 Hchat renderRoutineCards） */
 @Composable
 private fun RoutineGrid(stats: GroupStats) {
     fun hourSum(from: Int, to: Int) = stats.hourly.subList(from, to + 1).sum()
     val colorScheme = MaterialTheme.colorScheme
     val items = listOf(
-        RoutineItem(R.string.ui_group_stat_routine_owl, "0:00 - 04:00", MaterialSymbols.Outlined.Auto_awesome, colorScheme.tertiaryContainer, colorScheme.onTertiaryContainer),
-        RoutineItem(R.string.ui_group_stat_routine_early, "05:00 - 08:00", MaterialSymbols.Outlined.Sunny, colorScheme.secondaryContainer, colorScheme.onSecondaryContainer),
-        RoutineItem(R.string.ui_group_stat_routine_work, "09:00 - 18:00", MaterialSymbols.Outlined.Notes, colorScheme.primaryContainer, colorScheme.onPrimaryContainer),
-        RoutineItem(R.string.ui_group_stat_routine_night, "19:00 - 23:00", MaterialSymbols.Outlined.Schedule, colorScheme.errorContainer, colorScheme.onErrorContainer),
+        RoutineItem(R.string.ui_group_stat_routine_early, "05:00 – 08:59", MaterialSymbols.Outlined.Sunny, colorScheme.secondaryContainer, colorScheme.onSecondaryContainer),
+        RoutineItem(R.string.ui_group_stat_routine_work, "09:00 – 17:59", MaterialSymbols.Outlined.Notes, colorScheme.primaryContainer, colorScheme.onPrimaryContainer),
+        RoutineItem(R.string.ui_group_stat_routine_night, "18:00 – 22:59", MaterialSymbols.Outlined.Schedule, colorScheme.errorContainer, colorScheme.onErrorContainer),
+        RoutineItem(R.string.ui_group_stat_routine_owl, "23:00 – 04:59", MaterialSymbols.Outlined.Auto_awesome, colorScheme.tertiaryContainer, colorScheme.onTertiaryContainer),
     )
-    val counts = listOf(hourSum(0, 4), hourSum(5, 8), hourSum(9, 18), hourSum(19, 23))
+    val counts = listOf(hourSum(5, 8), hourSum(9, 17), hourSum(18, 22), stats.hourly[23] + hourSum(0, 4))
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
         items.chunked(2).forEachIndexed { rowIndex, rowItems ->
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -259,17 +265,65 @@ private fun RoutineGrid(stats: GroupStats) {
 
 private data class LabeledCount(val labelRes: Int, val count: Int, val color: Color)
 
-/** 情绪指数探测：5 项彩色指标条 */
+/** 情绪指数探测：5 项彩色指标条（对应 Hchat：快乐/激动暴躁/疑惑/荡漾撒娇/无语凝噎） */
 @Composable
 private fun EmotionBars(stats: GroupStats) {
     val items = listOf(
         LabeledCount(R.string.ui_group_stat_emotion_joy, stats.laughCount, BarYellow),
         LabeledCount(R.string.ui_group_stat_emotion_anger, stats.exclamationCount, BarRed),
         LabeledCount(R.string.ui_group_stat_emotion_curiosity, stats.questionCount, BarBlue),
-        LabeledCount(R.string.ui_group_stat_emotion_cold, stats.coldCount, BarPink),
+        LabeledCount(R.string.ui_group_stat_emotion_tilde, stats.tildeCount, BarPink),
         LabeledCount(R.string.ui_group_stat_emotion_speechless, stats.speechlessCount, BarGray),
     )
     LabeledBars(items)
+}
+
+/** 高频语义特征（词云）：按词频降序展示前 N 个高频词 */
+@Composable
+private fun WordCloud(stats: GroupStats) {
+    val entries = stats.words.entries
+        .sortedByDescending { it.value }
+        .take(GroupAnalyzePrefs.reportWordCount())
+    if (entries.isEmpty()) {
+        Text(
+            text = stringResource(R.string.ui_group_stat_words_empty),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        return
+    }
+    val maxCount = entries.first().value.coerceAtLeast(1)
+    FlowRow(
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        entries.forEach { (word, count) ->
+            val ratio = count.toFloat() / maxCount
+            Surface(
+                shape = RoundedCornerShape(16.dp),
+                color = MaterialTheme.colorScheme.primary.copy(alpha = 0.08f + 0.16f * ratio),
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                ) {
+                    Text(
+                        text = word,
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = if (ratio > 0.6f) FontWeight.Bold else FontWeight.Normal,
+                        color = MaterialTheme.colorScheme.onSurface,
+                    )
+                    Spacer(Modifier.width(6.dp))
+                    Text(
+                        text = "$count",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                }
+            }
+        }
+    }
 }
 
 /** 废话程度鉴定：4 档消息长度分布 */
@@ -321,36 +375,29 @@ private fun HourlyBars(stats: GroupStats) {
     }
 }
 
-/** 内容载体偏好：按设计图 8 类展示 */
+/** 内容载体偏好：按 Hchat carrierName 分类，按条数降序展示 */
 @Composable
 private fun TypeBars(stats: GroupStats) {
-    fun codeSum(vararg types: MessageType) = stats.codeCounts.entries
-        .filter { entry -> types.any { it.code == entry.key } }
-        .sumOf { it.value }
-    val known = mutableListOf<Int>().apply {
-        add(codeSum(MessageType.IMAGE))
-        add(codeSum(MessageType.QUOTE))
-        add(codeSum(MessageType.TEXT))
-        add(codeSum(MessageType.STICKER, MessageType.SO_GOU_EMOJI))
-        add(codeSum(MessageType.SYSTEM, MessageType.SYSTEM_NOTICE))
-        add(codeSum(MessageType.TRANSFER))
-        add(codeSum(MessageType.VOICE))
+    fun carrierLabelRes(name: String): Int = when (name) {
+        "文本" -> R.string.ui_group_stat_type_text
+        "图片" -> R.string.ui_group_stat_type_image
+        "语音" -> R.string.ui_group_stat_type_voice
+        "视频" -> R.string.ui_group_stat_type_video
+        "表情包" -> R.string.ui_group_stat_type_sticker
+        "位置" -> R.string.ui_group_stat_type_location
+        "卡片/文件" -> R.string.ui_group_stat_type_card_file
+        "系统消息" -> R.string.ui_group_stat_type_system
+        else -> R.string.ui_group_stat_type_other
     }
-    val items = listOf(
-        LabeledCount(R.string.ui_group_stat_type_image, known[0], MaterialTheme.colorScheme.primary),
-        LabeledCount(R.string.ui_group_stat_type_quote, known[1], MaterialTheme.colorScheme.primary),
-        LabeledCount(R.string.ui_group_stat_type_text, known[2], MaterialTheme.colorScheme.primary),
-        LabeledCount(R.string.ui_group_stat_type_sticker, known[3], MaterialTheme.colorScheme.primary),
-        LabeledCount(R.string.ui_group_stat_type_system, known[4], MaterialTheme.colorScheme.primary),
-        LabeledCount(R.string.ui_group_stat_type_other, stats.totalMessages - known.sum(), MaterialTheme.colorScheme.primary),
-        LabeledCount(R.string.ui_group_stat_type_transfer, known[5], MaterialTheme.colorScheme.primary),
-        LabeledCount(R.string.ui_group_stat_type_voice, known[6], MaterialTheme.colorScheme.primary),
-    )
+    val items = stats.carriers.entries
+        .sortedByDescending { it.value }
+        .map { LabeledCount(carrierLabelRes(it.key), it.value, MaterialTheme.colorScheme.primary) }
     LabeledBars(items, showDot = false)
 }
 
 @Composable
 private fun LabeledBars(items: List<LabeledCount>, showDot: Boolean = true) {
+    if (items.isEmpty()) return
     val maxCount = items.maxOf { it.count }
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         items.forEach { item ->

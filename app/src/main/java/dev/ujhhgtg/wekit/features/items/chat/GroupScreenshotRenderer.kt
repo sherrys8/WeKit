@@ -184,7 +184,7 @@ internal object GroupScreenshotRenderer {
         paint.color = Color.rgb(121, 132, 146)
         paint.textSize = 20.0f
         paint.textAlign = Paint.Align.RIGHT
-        canvas.drawText("WeKit 群聊分析", (width - cardMargin - contentPadding).toFloat(), (height - 68).toFloat(), paint)
+        canvas.drawText("一字一字手搓的报告🖍", (width - cardMargin - contentPadding).toFloat(), (height - 68).toFloat(), paint)
 
         return writeBitmap(bitmap, "summary")
     }

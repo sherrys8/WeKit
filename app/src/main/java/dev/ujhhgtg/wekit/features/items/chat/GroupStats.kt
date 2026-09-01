@@ -4,12 +4,10 @@ import dev.ujhhgtg.wekit.R
 import dev.ujhhgtg.wekit.features.api.core.WeDatabaseApi
 import dev.ujhhgtg.wekit.features.api.core.models.MessageType
 import dev.ujhhgtg.wekit.features.api.core.models.WeMessage
+import dev.ujhhgtg.wekit.preferences.WePrefs
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import java.text.SimpleDateFormat
 import java.util.Calendar
-import java.util.Date
-import java.util.Locale
 
 /** 核心指标：今日发言人数 / 今日消息数 / 历史总消息 */
 internal data class GroupCoreMetrics(
@@ -30,26 +28,28 @@ internal data class GroupStats(
     val textCount: Int,
     val senders: List<SenderStat>,
     val hourly: List<Int>,
-    val codeCounts: Map<Int, Int>,
+    val carriers: Map<String, Int>,
+    val words: Map<String, Int>,
     val laughCount: Int,
     val exclamationCount: Int,
     val questionCount: Int,
     val tildeCount: Int,
-    val coldCount: Int,
     val speechlessCount: Int,
     val lengthDist: List<Int>,
 )
 
-/** 群聊分析时间范围 */
-internal enum class GroupTimeRange(val labelRes: Int) {
-    TODAY(R.string.ui_group_range_today),
-    YESTERDAY(R.string.ui_group_range_yesterday),
-    THIS_WEEK(R.string.ui_group_range_this_week),
-    LAST_WEEK(R.string.ui_group_range_last_week),
-    THIS_MONTH(R.string.ui_group_range_this_month),
-    LAST_MONTH(R.string.ui_group_range_last_month),
-    THIS_YEAR(R.string.ui_group_range_this_year),
-    LAST_YEAR(R.string.ui_group_range_last_year),
+/**
+ * 群聊分析时间范围（对应 Hchat 的 days 滑窗：今日/昨日/本周/上周/本月/上月/全部
+ * = 最近 1/2/7/14/30/60 天 + 全部历史，dayCount = 0 表示全部）。
+ */
+internal enum class GroupTimeRange(val labelRes: Int, val dayCount: Int) {
+    TODAY(R.string.ui_group_range_today, 1),
+    YESTERDAY(R.string.ui_group_range_yesterday, 2),
+    THIS_WEEK(R.string.ui_group_range_this_week, 7),
+    LAST_WEEK(R.string.ui_group_range_last_week, 14),
+    THIS_MONTH(R.string.ui_group_range_this_month, 30),
+    LAST_MONTH(R.string.ui_group_range_last_month, 60),
+    ALL(R.string.ui_group_range_all, 0),
 }
 
 /** AI 上下文容量档位（token） */
@@ -61,61 +61,39 @@ internal enum class ModelCapacity(val tokens: Long, val label: String) {
     M2(2048 * 1024L, "2M"),
 }
 
+/** AI 容量档位对应的自动提取消息条数上限（Hchat aiAutoMessageLimit） */
+internal fun ModelCapacity.autoMessageLimit(): Int = when (this) {
+    ModelCapacity.K128 -> 3000
+    ModelCapacity.K256 -> 6000
+    ModelCapacity.K512 -> 12000
+    ModelCapacity.M1 -> 25000
+    ModelCapacity.M2 -> 50000
+}
+
+/** 深度分析采样与词云设置（对应 Hchat ana_sample_limit / ana_word_count / ana_min_len） */
+internal object GroupAnalyzePrefs {
+    var sampleLimit by WePrefs.prefOption("ana_sample_limit", 500)
+    var wordCount by WePrefs.prefOption("ana_word_count", 40)
+    var minWordLength by WePrefs.prefOption("ana_min_len", 2)
+
+    fun reportSampleLimit(): Int = sampleLimit.coerceIn(100, 50_000)
+    fun reportWordCount(): Int = wordCount.coerceIn(10, 80)
+    fun reportMinWordLength(): Int = minWordLength.coerceIn(2, 10)
+}
+
 /** 计算时间段 [start, end]（毫秒时间戳，与微信 message.createTime 单位一致） */
 internal fun groupRangeStartEnd(range: GroupTimeRange): Pair<Long, Long> {
     val now = System.currentTimeMillis()
-    val startCal = Calendar.getInstance().apply { timeInMillis = now }
-    val endCal = Calendar.getInstance().apply { timeInMillis = now }
-
-    fun clearTime(c: Calendar) {
-        c.set(Calendar.HOUR_OF_DAY, 0)
-        c.set(Calendar.MINUTE, 0)
-        c.set(Calendar.SECOND, 0)
-        c.set(Calendar.MILLISECOND, 0)
+    if (range == GroupTimeRange.ALL) return 0L to now
+    val start = Calendar.getInstance().apply {
+        timeInMillis = now
+        set(Calendar.HOUR_OF_DAY, 0)
+        set(Calendar.MINUTE, 0)
+        set(Calendar.SECOND, 0)
+        set(Calendar.MILLISECOND, 0)
+        add(Calendar.DAY_OF_YEAR, -Math.max(0, range.dayCount - 1))
     }
-
-    when (range) {
-        GroupTimeRange.TODAY -> clearTime(startCal)
-        GroupTimeRange.YESTERDAY -> {
-            startCal.add(Calendar.DAY_OF_YEAR, -1)
-            clearTime(startCal)
-            clearTime(endCal)
-        }
-        GroupTimeRange.THIS_WEEK -> {
-            startCal.set(Calendar.DAY_OF_WEEK, Calendar.MONDAY)
-            clearTime(startCal)
-        }
-        GroupTimeRange.LAST_WEEK -> {
-            startCal.set(Calendar.DAY_OF_WEEK, Calendar.MONDAY)
-            clearTime(startCal)
-            startCal.add(Calendar.WEEK_OF_YEAR, -1)
-            endCal.set(Calendar.DAY_OF_WEEK, Calendar.MONDAY)
-            clearTime(endCal)
-        }
-        GroupTimeRange.THIS_MONTH -> {
-            startCal.set(Calendar.DAY_OF_MONTH, 1)
-            clearTime(startCal)
-        }
-        GroupTimeRange.LAST_MONTH -> {
-            startCal.set(Calendar.DAY_OF_MONTH, 1)
-            clearTime(startCal)
-            startCal.add(Calendar.MONTH, -1)
-            endCal.set(Calendar.DAY_OF_MONTH, 1)
-            clearTime(endCal)
-        }
-        GroupTimeRange.THIS_YEAR -> {
-            startCal.set(Calendar.DAY_OF_YEAR, 1)
-            clearTime(startCal)
-        }
-        GroupTimeRange.LAST_YEAR -> {
-            startCal.set(Calendar.DAY_OF_YEAR, 1)
-            clearTime(startCal)
-            startCal.add(Calendar.YEAR, -1)
-            endCal.set(Calendar.DAY_OF_YEAR, 1)
-            clearTime(endCal)
-        }
-    }
-    return startCal.timeInMillis to endCal.timeInMillis
+    return start.timeInMillis to now
 }
 
 private val groupSenderRegex = Regex("""^([^\n:]+):\n(.+)""", setOf(RegexOption.DOT_MATCHES_ALL))
@@ -139,49 +117,56 @@ internal fun extractTextContent(msg: WeMessage, membersMap: Map<String, String>)
     return match?.groupValues?.get(2) ?: msg.content
 }
 
-private val perfunctoryReplyRegex =
-    Regex("^(嗯+|哦+|噢+|啊+|哈+|好|好的|行|好吧|中|6+|ok|OK|Ok)[~～]?\\s*$")
-
-private val speechlessRegex = Regex("。{2,}|…+|无语|服了|醉了")
-
-private val laughRegex = Regex("[哈哈呵呵嘿嘿😂🤣]")
+private const val WORD_STOP_WORDS =
+    "我们你们他们这个那个什么怎么可以就是不是没有一个现在然后因为所以已经还是感觉知道真哈哈呵呵好的收到表情图片视频语音消息"
 
 private fun <K> MutableMap<K, Int>.mergeCount(key: K, value: Int, op: (Int, Int) -> Int) {
     this[key] = op(this.getOrDefault(key, 0), value)
 }
 
-/** 文本报告的消息载体分类（与 UI 侧「内容载体偏好」分类独立） */
-internal fun categorizeMessageType(type: MessageType?, rawCode: Int): String {
-    if (type == null) return "其他"
-    return when {
-        type.isText -> "文本"
-        rawCode == MessageType.IMAGE.code -> "图片"
-        rawCode == MessageType.VOICE.code -> "语音"
-        rawCode == MessageType.VIDEO.code || rawCode == MessageType.MICRO_VIDEO.code -> "视频"
-        type.isSystem -> "系统"
-        type.isSticker -> "表情"
-        type.isLink || rawCode == MessageType.FILE.code -> "文件/链接"
-        else -> "其他"
-    }
+/** 消息载体分类（对应 Hchat carrierName） */
+internal fun carrierName(rawCode: Int): String = when (rawCode) {
+    1 -> "文本"
+    3 -> "图片"
+    34 -> "语音"
+    43, 62 -> "视频"
+    47 -> "表情包"
+    48 -> "位置"
+    49 -> "卡片/文件"
+    10000 -> "系统消息"
+    else -> "其他"
+}
+
+/** 文本清洗（对应 Hchat cleanMessageText）：截断、剥离发送者前缀与 XML 标签 */
+internal fun cleanMessageText(raw: String): String {
+    var value = raw
+    if (value.length > 2000) value = value.substring(0, 2000)
+    val split = value.indexOf(":\n")
+    if (split > 0 && split < 80) value = value.substring(split + 2)
+    value = value.replace(Regex("<[^>]+>"), " ")
+    value = value.trim()
+    return if (value.length > 600) value.substring(0, 600) else value
 }
 
 internal fun computeGroupStats(messages: List<WeMessage>, membersMap: Map<String, String>): GroupStats {
     val totalCount = messages.size
 
-    val codeCounts = mutableMapOf<Int, Int>()
+    val carriers = LinkedHashMap<String, Int>()
     val senderCounts = mutableMapOf<String, MutableList<WeMessage>>()
     val hourly = MutableList(24) { 0 }
     var laughCount = 0
     var questionCount = 0
     var exclamationCount = 0
     var tildeCount = 0
-    var coldCount = 0
     var speechlessCount = 0
+    var textCount = 0
     val lengthDist = MutableList(4) { 0 }
+    val words = HashMap<String, Int>()
+    val minWordLength = GroupAnalyzePrefs.reportMinWordLength()
 
     val cal = Calendar.getInstance()
     for (msg in messages) {
-        codeCounts.mergeCount(msg.typeCode, 1, Int::plus)
+        carriers.mergeCount(carrierName(msg.typeCode), 1, Int::plus)
 
         val senderId = extractSenderId(msg, membersMap)
         senderCounts.getOrPut(senderId) { mutableListOf() }.add(msg)
@@ -189,38 +174,50 @@ internal fun computeGroupStats(messages: List<WeMessage>, membersMap: Map<String
         cal.timeInMillis = msg.createTime
         hourly[cal.get(Calendar.HOUR_OF_DAY)]++
 
-        val type = MessageType.fromCode(msg.typeCode)
-        if (type?.isText == true) {
-            val textContent = extractTextContent(msg, membersMap)
+        if (msg.typeCode != 1) continue
+        val textContent = cleanMessageText(extractTextContent(msg, membersMap))
+        if (textContent.isEmpty()) continue
+        textCount++
 
-            val textLen = textContent.length
-            when {
-                textLen <= 5 -> lengthDist[0]++
-                textLen <= 20 -> lengthDist[1]++
-                textLen <= 50 -> lengthDist[2]++
-                else -> lengthDist[3]++
+        // 废话长度：去除空白后计数（对应 Hchat length）
+        val length = textContent.replace(Regex("\\s+"), "").length
+        when {
+            length <= 5 -> lengthDist[0]++
+            length <= 20 -> lengthDist[1]++
+            length <= 50 -> lengthDist[2]++
+            else -> lengthDist[3]++
+        }
+
+        // 情绪指纹（对应 Hchat analyzeDeepRows）
+        if (textContent.indexOf("哈") >= 0 || textContent.indexOf("笑") >= 0) laughCount++
+        if (textContent.indexOf("?") >= 0 || textContent.indexOf("？") >= 0 || textContent.endsWith("吗")) questionCount++
+        if (textContent.indexOf("!") >= 0 || textContent.indexOf("！") >= 0) exclamationCount++
+        if (textContent.contains("~") || textContent.contains("～")) tildeCount++
+        if (textContent.contains("无语") || textContent.contains("...") || textContent.contains("。。。")) speechlessCount++
+
+        // 高频语义词频（对应 Hchat 1383-1397）
+        val normalized = textContent.replace(Regex("[^一-龥]+"), " ")
+        for (piece in normalized.split(Regex("\\s+"))) {
+            val word = piece.trim()
+            if (word.length < minWordLength) continue
+            if (word.length <= 8) {
+                words.mergeCount(word, 1, Int::plus)
+            } else {
+                for (w in 0..(word.length - minWordLength)) {
+                    val part = word.substring(w, w + minWordLength)
+                    if (minWordLength == 2 && WORD_STOP_WORDS.contains(part)) continue
+                    words.mergeCount(part, 1, Int::plus)
+                }
             }
-
-            if (laughRegex.containsMatchIn(textContent)) laughCount++
-            if (textContent.endsWith("?") || textContent.endsWith("？")) questionCount++
-            if (textContent.endsWith("!") || textContent.endsWith("！")) exclamationCount++
-            if (textContent.contains("~") || textContent.contains("～")) tildeCount++
-            if (perfunctoryReplyRegex.containsMatchIn(textContent.trim())) coldCount++
-            if (speechlessRegex.containsMatchIn(textContent)) speechlessCount++
         }
     }
-
-    val textCount = codeCounts.entries
-        .filter { MessageType.fromCode(it.key)?.isText == true }
-        .sumOf { it.value }
 
     val senders = senderCounts.entries
         .sortedByDescending { it.value.size }
         .take(10)
         .map { (senderId, msgs) ->
-            val mainType = msgs.groupBy { m ->
-                categorizeMessageType(MessageType.fromCode(m.typeCode), m.typeCode)
-            }.maxByOrNull { it.value.size }?.key ?: "文本"
+            val mainType = msgs.groupBy { m -> carrierName(m.typeCode) }
+                .maxByOrNull { it.value.size }?.key ?: "文本"
             SenderStat(resolveSenderName(senderId, membersMap), msgs.size, mainType)
         }
 
@@ -232,47 +229,15 @@ internal fun computeGroupStats(messages: List<WeMessage>, membersMap: Map<String
         textCount = textCount,
         senders = senders,
         hourly = hourly,
-        codeCounts = codeCounts,
+        carriers = carriers,
+        words = words,
         laughCount = laughCount,
         exclamationCount = exclamationCount,
         questionCount = questionCount,
         tildeCount = tildeCount,
-        coldCount = coldCount,
         speechlessCount = speechlessCount,
         lengthDist = lengthDist,
     )
-}
-
-/** 渲染文本版统计报告（AI 提示词输入，格式与历史版本一致） */
-internal fun renderStatsReport(stats: GroupStats): String {
-    val sb = StringBuilder()
-    val dateFormat = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault())
-    sb.appendLine("群聊统计报告")
-    sb.appendLine("统计周期:${dateFormat.format(Date(stats.periodStart))}至${dateFormat.format(Date(stats.periodEnd))}")
-    sb.appendLine("总消息:${stats.totalMessages}条 发言人数:${stats.speakerCount}人")
-    val typeCounts = mutableMapOf<String, Int>()
-    stats.codeCounts.forEach { (code, count) ->
-        typeCounts.mergeCount(categorizeMessageType(MessageType.fromCode(code), code), count, Int::plus)
-    }
-    sb.appendLine("消息载体 图片:${typeCounts.getOrDefault("图片", 0)}条 语音:${typeCounts.getOrDefault("语音", 0)}条 文本:${typeCounts.getOrDefault("文本", 0)}条 视频:${typeCounts.getOrDefault("视频", 0)}条 系统:${typeCounts.getOrDefault("系统", 0)}条 文件/链接:${typeCounts.getOrDefault("文件/链接", 0)}条 表情:${typeCounts.getOrDefault("表情", 0)}条")
-    sb.appendLine("发言排行")
-    stats.senders.forEachIndexed { index, sender ->
-        sb.appendLine("${index + 1}.${sender.name}:${sender.count}条")
-    }
-    val periodOf = { from: Int, to: Int -> stats.hourly.subList(from, to + 1).sum() }
-    sb.appendLine("活跃时段 凌晨(0-5):${periodOf(0, 5)}条 上午(6-11):${periodOf(6, 11)}条 下午(12-17):${periodOf(12, 17)}条 夜晚(18-23):${periodOf(18, 23)}条")
-    sb.appendLine("情绪指纹")
-    val textMsgCount = stats.textCount.coerceAtLeast(1)
-    fun pct(count: Int) = "%.1f".format(count.toDouble() / textMsgCount * 100)
-    sb.appendLine("笑点浓度:${pct(stats.laughCount)}% 疑问句比例:${pct(stats.questionCount)}% 感叹句比例:${pct(stats.exclamationCount)}% 波浪号比例:${pct(stats.tildeCount)}%")
-    sb.appendLine("废话程度鉴定 ≤5字:${stats.lengthDist[0]}条 6-20字:${stats.lengthDist[1]}条 21-50字:${stats.lengthDist[2]}条 >50字:${stats.lengthDist[3]}条")
-    sb.appendLine("用户画像")
-    stats.senders.forEach { sender ->
-        val percentage = "%.1f".format(sender.count.toDouble() / stats.totalMessages * 100)
-        sb.appendLine("·${sender.name}:${sender.count}条($percentage%),主发${sender.mainType}")
-    }
-    sb.appendLine()
-    return sb.toString()
 }
 
 internal suspend fun loadGroupMembersMap(talker: String): Map<String, String> =
@@ -296,7 +261,9 @@ internal suspend fun loadCoreMetrics(talker: String): GroupCoreMetrics =
             set(Calendar.SECOND, 0)
             set(Calendar.MILLISECOND, 0)
         }.timeInMillis
+        // 排除系统消息（type=10000），避免把入群/改群名等系统提示计入今日数据
         val todayMessages = WeDatabaseApi.getMessagesInRange(talker, todayStart, now)
+            .filter { it.typeCode != 10000 }
         val membersMap = loadGroupMembersMap(talker)
         GroupCoreMetrics(
             todaySpeakers = todayMessages.map { extractSenderId(it, membersMap) }.distinct().size,
@@ -309,6 +276,7 @@ internal suspend fun loadGroupStats(talker: String, range: GroupTimeRange): Grou
     withContext(Dispatchers.IO) {
         val membersMap = loadGroupMembersMap(talker)
         val (start, end) = groupRangeStartEnd(range)
-        val messages = WeDatabaseApi.getMessagesInRange(talker, start, end)
+        // 深度统计采样最近 N 条（对应 Hchat analyzeDeepRows 的 ORDER BY createTime DESC LIMIT）
+        val messages = WeDatabaseApi.getMessagesInRangeDesc(talker, start, end, GroupAnalyzePrefs.reportSampleLimit())
         computeGroupStats(messages, membersMap)
     }

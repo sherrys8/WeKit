@@ -28,13 +28,11 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -55,16 +53,15 @@ import com.composables.icons.materialsymbols.outlined.Leaderboard
 import com.composables.icons.materialsymbols.outlined.Photo_library
 import com.composables.icons.materialsymbols.outlined.Psychology_alt
 import dev.ujhhgtg.wekit.ui.content.Button
-import kotlin.math.roundToInt
 
-/** 群聊活跃检测：周期滑块 + 活跃/总成员 + 低活跃成员弹窗入口 */
+/** 群聊活跃检测：周期跟随报告时段 + 活跃/总成员 + 低活跃成员弹窗入口 */
 @Composable
 internal fun GroupActivityChartCard(
     talker: String,
+    days: Int,
     onShowLowActivity: (List<LowActivityMember>) -> Unit,
 ) {
     var collapsed by remember { mutableStateOf(true) }
-    var days by remember { mutableIntStateOf(7) }
     var result by remember { mutableStateOf<ActivityResult?>(null) }
 
     LaunchedEffect(talker, days) {
@@ -72,24 +69,10 @@ internal fun GroupActivityChartCard(
     }
 
     ExtendedStatCard(MaterialSymbols.Outlined.Groups, R.string.ui_group_activity_title, collapsed, { collapsed = !collapsed }) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(
-                text = stringResource(R.string.ui_group_activity_range_label),
-                style = MaterialTheme.typography.bodySmall,
-                modifier = Modifier.weight(1f),
-            )
-            Text(
-                text = "${days}天",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.primary,
-            )
-        }
-        Slider(
-            value = days.toFloat(),
-            onValueChange = { days = it.roundToInt() },
-            valueRange = 1f..90f,
-            steps = 88,
-            modifier = Modifier.fillMaxWidth(),
+        Text(
+            text = stringResource(R.string.ui_group_activity_range_label, days),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
 
         Spacer(Modifier.height(8.dp))
