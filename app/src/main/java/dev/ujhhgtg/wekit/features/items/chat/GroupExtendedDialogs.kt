@@ -349,7 +349,7 @@ internal fun GroupChoiceScreenshotDialog(
                                         }
                                         // 发送成功后 60 秒删除临时截图（对应 Hchat）
                                         scope.launch {
-                                            delay(60_000)
+                                            delay(60_000L)
                                             withContext(Dispatchers.IO) {
                                                 runCatching { java.nio.file.Files.deleteIfExists(screenshotPath) }
                                             }

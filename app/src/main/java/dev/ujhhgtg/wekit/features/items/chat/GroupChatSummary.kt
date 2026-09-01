@@ -630,7 +630,7 @@ object GroupChatSummary : SwitchFeature(), WeChatMessageContextMenuApi.IMenuItem
         screenshotToSend?.let { (path, contentName) ->
             // 弹窗展示后 10 分钟自动清理临时截图（对应 Hchat 展示后延迟删除）
             LaunchedEffect(path) {
-                delay(10 * 60_000)
+                delay(10 * 60_000L)
                 runCatching { Files.deleteIfExists(path) }
             }
             GroupExtendedDialog(
@@ -1078,21 +1078,21 @@ object GroupChatSummary : SwitchFeature(), WeChatMessageContextMenuApi.IMenuItem
                         label = stringResource(R.string.ui_group_sample_limit),
                         value = draftSampleLimit,
                         valueRange = 100f..50_000f,
-                        onValueChange = { draftSampleLimit = it.roundToInt() },
+                        onValueChange = { draftSampleLimit = it },
                     )
                     Spacer(Modifier.height(12.dp))
                     SamplingSliderRow(
                         label = stringResource(R.string.ui_group_word_count),
                         value = draftWordCount,
                         valueRange = 10f..80f,
-                        onValueChange = { draftWordCount = it.roundToInt() },
+                        onValueChange = { draftWordCount = it },
                     )
                     Spacer(Modifier.height(12.dp))
                     SamplingSliderRow(
                         label = stringResource(R.string.ui_group_min_word_len),
                         value = draftMinLen,
                         valueRange = 2f..10f,
-                        onValueChange = { draftMinLen = it.roundToInt() },
+                        onValueChange = { draftMinLen = it },
                     )
                 }
             },
