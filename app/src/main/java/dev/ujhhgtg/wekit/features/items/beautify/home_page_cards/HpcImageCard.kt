@@ -31,6 +31,9 @@ object HpcImageCard {
         return if (HomePageCards.imageCardFormat == "five") buildFiveCard(ctx) else buildCard(ctx)
     }
 
+    /** Legacy content:// / https:// values stay loadable; stored assets resolve to their local file. */
+    private fun imageModelFor(ref: String): Any = HpcImageAssets.assetFile(ref) ?: ref
+
     fun imageCardImagesList(): List<String> {
         val s = WePrefs.getString("home_image_card_images") ?: return emptyList()
         return try {
@@ -67,7 +70,7 @@ object HpcImageCard {
                     scaleType = ImageView.ScaleType.CENTER_CROP
                 }
                 card.addView(iv, FrameLayout.LayoutParams(-1, -1))
-                iv.load(bgImage) { crossfade(true) }
+                iv.load(imageModelFor(bgImage)) { crossfade(true) }
             } else {
                 val iv = ImageView(ctx).apply {
                     scaleType = ImageView.ScaleType.CENTER_CROP
@@ -117,7 +120,7 @@ object HpcImageCard {
                     rotationY = rotations[i]
                     if (i >= uris.size) setBackgroundColor(Color.parseColor("#E0E0E0"))
                 }
-                if (i < uris.size) iv.load(uris[i]) { crossfade(true) }
+                if (i < uris.size) iv.load(imageModelFor(uris[i])) { crossfade(true) }
                 val lp = LinearLayout.LayoutParams(0, -1, 1f)
                 if (i > 0) lp.marginStart = gap
                 row.addView(iv, lp)

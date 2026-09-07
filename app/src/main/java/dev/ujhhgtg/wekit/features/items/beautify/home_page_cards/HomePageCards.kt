@@ -45,6 +45,7 @@ import dev.ujhhgtg.wekit.ui.content.m3.TextFieldDialogWidget
 import dev.ujhhgtg.wekit.ui.utils.showComposeDialog
 import dev.ujhhgtg.wekit.utils.HostInfo
 import dev.ujhhgtg.wekit.utils.WeLogger
+import dev.ujhhgtg.wekit.utils.android.showToast
 import dev.ujhhgtg.wekit.utils.nul
 import org.json.JSONArray
 
@@ -128,13 +129,14 @@ object HomePageCards : ClickableFeature() {
             ) { uri ->
                 finish()
                 if (uri == null) return@registerForActivityResult
-                val cr = HostInfo.application.contentResolver
-                runCatching {
-                    cr.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                }.onFailure {
-                    WeLogger.w(TAG, "failed to take persistable uri permission", it)
+                val stored = HpcImageAssets.importFromUri(uri)
+                if (stored == null) {
+                    showToast("图片导入失败，请重试")
+                    return@registerForActivityResult
                 }
-                imageCardBgImage = uri.toString()
+                HpcImageAssets.deleteAsset(imageCardBgImage)
+                imageCardBgImage = stored
+                HpcImageCard.clearCache()
             }
             launcher.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
         }
@@ -147,17 +149,18 @@ object HomePageCards : ClickableFeature() {
             ) { uris ->
                 finish()
                 if (uris.isEmpty()) return@registerForActivityResult
-                val cr = HostInfo.application.contentResolver
-                uris.forEach { uri ->
-                    runCatching {
-                        cr.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                    }.onFailure {
-                        WeLogger.w(TAG, "failed to take persistable uri permission", it)
+                val imported = mutableListOf<String>()
+                for (uri in uris) {
+                    val stored = HpcImageAssets.importFromUri(uri)
+                    if (stored == null) {
+                        imported.forEach(HpcImageAssets::deleteAsset)
+                        showToast("图片导入失败，请重试")
+                        return@registerForActivityResult
                     }
+                    imported += stored
                 }
-                imageCardImages = JSONArray().apply {
-                    uris.forEach { put(it.toString()) }
-                }.toString()
+                HpcImageCard.imageCardImagesList().forEach(HpcImageAssets::deleteAsset)
+                imageCardImages = JSONArray(imported).toString()
                 HpcImageCard.clearCache()
             }
             launcher.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
@@ -376,6 +379,7 @@ object HomePageCards : ClickableFeature() {
                                         trailingContent = {
                                             if (imgHasImage) {
                                                 IconButton(onClick = {
+                                                    HpcImageAssets.deleteAsset(imageCardBgImage)
                                                     imageCardBgImage = null
                                                     imgHasImage = false
                                                     HpcImageCard.clearCache()
@@ -400,6 +404,7 @@ object HomePageCards : ClickableFeature() {
                                         trailingContent = {
                                             if (imgFiveCount > 0) {
                                                 IconButton(onClick = {
+                                                    HpcImageCard.imageCardImagesList().forEach(HpcImageAssets::deleteAsset)
                                                     imageCardImages = ""
                                                     imgFiveCount = 0
                                                     HpcImageCard.clearCache()
