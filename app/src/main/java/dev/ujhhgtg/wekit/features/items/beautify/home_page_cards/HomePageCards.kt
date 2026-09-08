@@ -1,7 +1,6 @@
 package dev.ujhhgtg.wekit.features.items.beautify.home_page_cards
 
 import android.app.Activity
-import android.content.Intent
 import androidx.activity.ComponentActivity
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
@@ -37,13 +36,11 @@ import dev.ujhhgtg.wekit.features.core.FeatureCategoryIds
 import dev.ujhhgtg.wekit.preferences.WePrefs.Companion.prefOption
 import dev.ujhhgtg.wekit.ui.content.AlertDialogContent
 import dev.ujhhgtg.wekit.ui.content.m3.BaseWidget
-import dev.ujhhgtg.wekit.ui.content.m3.ColorPickerWidget
 import dev.ujhhgtg.wekit.ui.content.m3.RadioButtonWidget
 import dev.ujhhgtg.wekit.ui.content.m3.SegmentedColumn
 import dev.ujhhgtg.wekit.ui.content.m3.SwitchWidget
 import dev.ujhhgtg.wekit.ui.content.m3.TextFieldDialogWidget
 import dev.ujhhgtg.wekit.ui.utils.showComposeDialog
-import dev.ujhhgtg.wekit.utils.HostInfo
 import dev.ujhhgtg.wekit.utils.WeLogger
 import dev.ujhhgtg.wekit.utils.android.showToast
 import dev.ujhhgtg.wekit.utils.nul
@@ -51,7 +48,7 @@ import org.json.JSONArray
 
 object HomePageCards : ClickableFeature() {
 
-    override val technicalId = "首页三卡"
+    override val technicalId = "首页卡片"
     override val nameRes = R.string.feature_beautify_home_page_cards_name
     override val categoryIds = listOf(FeatureCategoryIds.BEAUTIFY)
     override val descriptionRes = R.string.feature_beautify_home_page_cards_description
@@ -60,26 +57,17 @@ object HomePageCards : ClickableFeature() {
 
     override val defaultEnabled: Boolean = true
 
-    var calendarCardEnabled by prefOption("home_calendar_card", false)
     var imageCardEnabled by prefOption("home_image_card", false)
     var musicCardEnabled by prefOption("home_music_card", false)
-    var cardsOrder by prefOption("home_cards_order", "calendar,image,music")
+    var cardsOrder by prefOption("home_cards_order", "image,music")
 
-    var calendarBgColor by prefOption("home_calendar_bg_color", "#FFFFFFFF")
-    var calendarBgImage by prefOption("home_calendar_bg_image", nul<String>())
     var imageCardBgImage by prefOption("home_image_card_bg_image", nul<String>())
     var imageCardFormat by prefOption("home_image_card_format", "single")
     var imageCardImages by prefOption("home_image_card_images", "")
     var qsToken by prefOption("home_qs_token", "")
 
-    var calendarTitleColor by prefOption("home_calendar_title_color", "#FFFFFF")
-    var calendarSubtitleColor by prefOption("home_calendar_subtitle_color", "#E0E0E0")
-    var calendarYiColor by prefOption("home_calendar_yi_color", "#4CAF50")
-    var calendarJiColor by prefOption("home_calendar_ji_color", "#FF5252")
-    var calendarDateBgColor by prefOption("home_calendar_date_bg_color", "#000000")
-
     override fun onEnable() {
-        WeLogger.i(TAG, "首页三卡已启用")
+        WeLogger.i(TAG, "首页卡片已启用")
         HpcMediaNotification.release()
 
         Activity::class.java.reflekt().firstMethod { name = "onResume" }.hookAfter {
@@ -87,12 +75,11 @@ object HomePageCards : ClickableFeature() {
             if (act.javaClass.name != "com.tencent.mm.ui.LauncherUI") return@hookAfter
             onLauncherResume(act)
         }
-        WeLogger.i(TAG, "首页三卡 hook 已注册")
+        WeLogger.i(TAG, "首页卡片 hook 已注册")
     }
 
     override fun onDisable() {
-        WeLogger.i(TAG, "首页三卡已禁用")
-        HpcCalendarCard.clearCache()
+        WeLogger.i(TAG, "首页卡片已禁用")
         HpcImageCard.clearCache()
         HpcMusicCard.clearCache()
         HpcMediaNotification.release()
@@ -101,25 +88,6 @@ object HomePageCards : ClickableFeature() {
     fun onLauncherResume(act: Activity) {
         HpcMusicCard.bindActivity(act)
         HpcCardManager.insertCards(act)
-    }
-
-    private fun selectCalendarImage(context: ComponentActivity) {
-        TransparentActivity.launch(context) {
-            val launcher = registerForActivityResult(
-                ActivityResultContracts.PickVisualMedia()
-            ) { uri ->
-                finish()
-                if (uri == null) return@registerForActivityResult
-                val cr = HostInfo.application.contentResolver
-                runCatching {
-                    cr.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                }.onFailure {
-                    WeLogger.w(TAG, "failed to take persistable uri permission", it)
-                }
-                calendarBgImage = uri.toString()
-            }
-            launcher.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
-        }
     }
 
     private fun selectImageCardImage(context: ComponentActivity) {
@@ -169,39 +137,19 @@ object HomePageCards : ClickableFeature() {
 
     override fun onClick(context: ComponentActivity) {
         showComposeDialog(context) {
-            var calEnabled by remember { mutableStateOf(calendarCardEnabled) }
             var imgEnabled by remember { mutableStateOf(imageCardEnabled) }
             var musEnabled by remember { mutableStateOf(musicCardEnabled) }
             var order by remember { mutableStateOf(cardsOrder) }
-            var calBgColor by remember { mutableStateOf(calendarBgColor) }
-            var calHasImage by remember { mutableStateOf(calendarBgImage != null) }
             var imgHasImage by remember { mutableStateOf(imageCardBgImage != null) }
             var imgFormat by remember { mutableStateOf(imageCardFormat) }
             var imgFiveCount by remember { mutableStateOf(HpcImageCard.imageCardImagesList().size) }
             var qsTokenState by remember { mutableStateOf(qsToken) }
-            var titleColor by remember { mutableStateOf(calendarTitleColor) }
-            var subtitleColor by remember { mutableStateOf(calendarSubtitleColor) }
-            var yiColor by remember { mutableStateOf(calendarYiColor) }
-            var jiColor by remember { mutableStateOf(calendarJiColor) }
-            var dateBgColor by remember { mutableStateOf(calendarDateBgColor) }
 
             AlertDialogContent(
-                title = { Text("首页三卡设置") },
+                title = { Text("首页卡片设置") },
                 text = {
                     Column(Modifier.verticalScroll(rememberScrollState())) {
                         SegmentedColumn(title = "子卡片开关") {
-                            item {
-                                SwitchWidget(
-                                    iconPlaceholder = false,
-                                    title = "日历卡",
-                                    description = "农历、黄历宜忌、天气、一言",
-                                    checked = calEnabled,
-                                    onCheckedChange = {
-                                        calEnabled = it
-                                        calendarCardEnabled = it
-                                    },
-                                )
-                            }
                             item {
                                 SwitchWidget(
                                     iconPlaceholder = false,
@@ -244,98 +192,6 @@ object HomePageCards : ClickableFeature() {
                                     dismissLabel = "取消",
                                     valueHint = "未设置，请前往 api.cxzja.cn 获取",
                                     password = true,
-                                )
-                            }
-                        }
-
-                        Spacer(Modifier.height(8.dp))
-
-                        SegmentedColumn(title = "日历卡背景") {
-                            item {
-                                ColorPickerWidget(
-                                    title = "背景颜色",
-                                    value = calBgColor,
-                                    onValueChange = {
-                                        calBgColor = it
-                                        calendarBgColor = it
-                                    },
-                                )
-                            }
-                            item {
-                                BaseWidget(
-                                    iconPlaceholder = false,
-                                    title = "背景图片",
-                                    description = if (calHasImage) "已选择图片" else "未设置（使用纯色背景）",
-                                    onClick = { selectCalendarImage(context) },
-                                    trailingContent = {
-                                        if (calHasImage) {
-                                            IconButton(onClick = {
-                                                calendarBgImage = null
-                                                calHasImage = false
-                                            }) {
-                                                Icon(
-                                                    MaterialSymbols.Outlined.Delete,
-                                                    contentDescription = "清除图片",
-                                                    modifier = Modifier.size(20.dp),
-                                                )
-                                            }
-                                        }
-                                    },
-                                )
-                            }
-                        }
-
-                        Spacer(Modifier.height(8.dp))
-
-                        SegmentedColumn(title = "日历卡字体颜色") {
-                            item {
-                                ColorPickerWidget(
-                                    title = "年月标题 / 日期数字 / 天气",
-                                    value = titleColor,
-                                    onValueChange = {
-                                        titleColor = it
-                                        calendarTitleColor = it
-                                    },
-                                )
-                            }
-                            item {
-                                ColorPickerWidget(
-                                    title = "星期 / 农历 / 进度 / 一言",
-                                    value = subtitleColor,
-                                    onValueChange = {
-                                        subtitleColor = it
-                                        calendarSubtitleColor = it
-                                    },
-                                )
-                            }
-                            item {
-                                ColorPickerWidget(
-                                    title = "宜 文字颜色",
-                                    value = yiColor,
-                                    onValueChange = {
-                                        yiColor = it
-                                        calendarYiColor = it
-                                    },
-                                )
-                            }
-                            item {
-                                ColorPickerWidget(
-                                    title = "忌 文字颜色",
-                                    value = jiColor,
-                                    onValueChange = {
-                                        jiColor = it
-                                        calendarJiColor = it
-                                    },
-                                )
-                            }
-                            item {
-                                ColorPickerWidget(
-                                    title = "日期数字背景色",
-                                    value = dateBgColor,
-                                    onValueChange = {
-                                        dateBgColor = it
-                                        calendarDateBgColor = it
-                                    },
                                 )
                             }
                         }
@@ -425,9 +281,8 @@ object HomePageCards : ClickableFeature() {
                         Spacer(Modifier.height(8.dp))
 
                         SegmentedColumn(title = "卡片顺序") {
-                            val ids = order.split(",").filter { it.isNotEmpty() }
+                            val ids = order.split(",").filter { it.isNotEmpty() && it != "calendar" }
                             val labels = mapOf(
-                                "calendar" to "日历卡",
                                 "image" to "图片卡",
                                 "music" to "音乐播放器",
                             )

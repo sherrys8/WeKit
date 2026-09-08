@@ -28,12 +28,10 @@ object HpcCardManager {
             }
 
             val enabled = mapOf(
-                "calendar" to (HomePageCards.calendarCardEnabled && HpcCalendarCard.getCard(act) != null),
                 "image" to (HomePageCards.imageCardEnabled && HpcImageCard.getCard(act) != null),
                 "music" to (HomePageCards.musicCardEnabled && HpcMusicCard.getCard(act) != null),
             )
             val cards = mapOf(
-                "calendar" to HpcCalendarCard.getCard(act),
                 "image" to HpcImageCard.getCard(act),
                 "music" to HpcMusicCard.getCard(act),
             )

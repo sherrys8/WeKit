@@ -323,10 +323,6 @@ Prefer these over raw Compose controls:
 ### In Progress
 - (none)
 
-### Blocked
-- 汽水音乐 API 搜索需要用户在设置中手动填入 Token，无 Token 时搜索返回空
-- 用户设备上搜索仍显示"未找到结果"，原因待排查（API 测试正常，代码逻辑正确，怀疑设备网络问题）
-
 ## Key Decisions
 - 设置页使用弹窗（`showComposeDialog`）而非独立 Activity
 - 音乐 API 直连第三方，不再经过 Wex 密钥分发层
@@ -337,7 +333,6 @@ Prefer these over raw Compose controls:
 
 ## Next Steps
 1. 群聊分析 ComponentActivity 全屏切换已提交，待 CI 构建验证（本地不构建，CI 负责编译）；真机验证长按菜单 → 全屏界面、状态栏着色、键盘弹起（ADJUST_RESIZE）
-2. 等待用户设备上安装新 APK 后观察 toast 错误提示，定位汽水音乐搜索失败原因
 
 ## Critical Context
 - 远端 `origin/dev-sherry` 最新 commit：`b34503d7`
