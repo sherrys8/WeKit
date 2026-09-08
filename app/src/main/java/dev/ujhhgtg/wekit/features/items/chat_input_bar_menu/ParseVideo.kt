@@ -76,7 +76,6 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
-import kotlinx.serialization.decodeFromJsonElement
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.Json
@@ -362,11 +361,11 @@ object ParseVideo : ClickableFeature() {
                         video_cover = (dataElement["video_cover"] as? JsonPrimitive)?.content ?: "",
                         video_link = if (isImageGallery) "" else urls.firstOrNull() ?: "",
                         author = (dataElement["author"] as? JsonObject)?.let {
-                            json.decodeFromJsonElement<AuthorData>(it)
+                            json.decodeFromJsonElement(AuthorData.serializer(), it)
                         },
                     )
                 }
-                else -> json.decodeFromJsonElement<VideoData>(dataElement)
+                else -> json.decodeFromJsonElement(VideoData.serializer(), dataElement)
             }
             val galleryImages = if (normalized.video_link.isBlank()) {
                 // 图集地址优先取 video_link 数组里的 url；kit9 部分响应也提供 image 字段（字符串或数组）作兜底
