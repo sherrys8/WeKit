@@ -325,7 +325,10 @@ object ParseVideo : ClickableFeature() {
 
     // ==================== 第三备用线路（dovis 小红书）数据模型 ====================
 
-    /** dovis 小红书解析响应：{code, msg, data:{author, authorID, title, desc, avatar, cover, url}} */
+    /**
+     * dovis 小红书解析响应：{code, msg, data:{author, authorID, title, desc, avatar, cover, url, imgurl}}。
+     * 视频笔记：直链在 `url`；图集笔记：`url` 缺省，图片直链列表在 `imgurl`。
+     */
     @Serializable
     private data class XhsParseResult(
         val code: Int = 0,
@@ -341,7 +344,7 @@ object ParseVideo : ClickableFeature() {
         val avatar: String? = null,
         val cover: String? = null,
         val url: String? = null,
-        val images: List<String> = emptyList(),
+        val imgurl: List<String> = emptyList(),
     )
 
     // ==================== 解析 + 下载 + 发送 ====================
@@ -486,7 +489,10 @@ object ParseVideo : ClickableFeature() {
     /** 第三备用线路：dovis 小红书解析（http 接口，视频直链无水印；支持 xiaohongshu.com / xhslink 短链）。 */
     private fun parseByXhs(link: String): Result<VideoParseResult> = runCatching {
         val url = PARSE_API_XHS + java.net.URLEncoder.encode(link, "UTF-8")
-        val request = Request.Builder().url(url).get().build()
+        // 必须携带浏览器 User-Agent：后端用请求方 UA 抓取小红书页面，默认 okhttp UA 会得到 502
+        val request = Request.Builder().url(url).get()
+            .header("User-Agent", webUserAgent)
+            .build()
         httpClient.newCall(request).execute().use { resp ->
             if (!resp.isSuccessful) error("小红书线路请求失败: HTTP ${resp.code}")
             val body = resp.body?.string() ?: error("小红书线路响应为空")
@@ -494,7 +500,7 @@ object ParseVideo : ClickableFeature() {
             require(result.code == 200) { result.msg.ifBlank { "小红书线路解析失败 (code=${result.code})" } }
             val data = result.data ?: error("小红书线路返回数据为空")
             val videoUrl = data.url.orEmpty().takeIf { it.startsWith("http") }
-            val images = data.images.filter { it.startsWith("http") }
+            val images = data.imgurl.filter { it.startsWith("http") }
             if (videoUrl == null && images.isEmpty()) error("小红书线路未返回可用的视频/图片地址")
             WeLogger.i(TAG, "xhs parse ok, video=${videoUrl != null}, images=${images.size}")
             VideoParseResult(
@@ -522,9 +528,10 @@ object ParseVideo : ClickableFeature() {
      * 从粘贴的分享文案中提取首个 http(s) 链接。
      * 抖音/快手等平台复制出来的是整段分享文案（含口令、表情、说明文字），
      * 直接把整段文本交给解析 API 会因无法识别链接而失败。
+     * 链接外层标注的双引号（含中文弯引号）一并去除。
      */
     private fun extractVideoUrl(raw: String): String {
-        return urlRegex.find(raw)?.value ?: ""
+        return urlRegex.find(raw)?.value?.trim('"', '“', '”') ?: ""
     }
 
     private fun downloadVideo(
@@ -600,9 +607,9 @@ object ParseVideo : ClickableFeature() {
         }
     }
 
-    /** 从消息文本中提取抖音分享链接；非抖音链接返回空串。 */
+    /** 从消息文本中提取抖音分享链接；非抖音链接返回空串。链接外层标注的双引号一并去除。 */
     private fun extractDouyinUrl(raw: String): String =
-        douyinUrlRegex.find(raw)?.value ?: ""
+        douyinUrlRegex.find(raw)?.value?.trim('"', '“', '”') ?: ""
 
     /** 真正执行解析 + 下载 + 发送。所有流程在地线程执行, 调用方已持锁。 */
     private suspend fun doAutoReply(talker: String, link: String) {
