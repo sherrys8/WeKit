@@ -3983,7 +3983,6 @@
     <string name="parse_video_auto_reply">群聊抖音連結自動解析</string>
     <string name="parse_video_auto_reply_description">群聊裡有人發抖音分享連結時，自動解析並直接把去浮水印影片傳回該群聊</string>
     <string name="parse_video_download">下載影片</string>
-    <string name="parse_video_copy_link">複製直鏈</string>
     <string name="parse_video_send_video">傳送影片</string>
     <string name="parse_video_delete">刪除檔案</string>
     <string name="parse_video_downloading">下載中...</string>
@@ -4001,4 +4000,11 @@
     <string name="parse_video_music_download_failed">音樂擷取失敗</string>
     <string name="parse_video_download_images">下載全部圖片</string>
     <string name="parse_video_gallery_detected">偵測到圖集：%1$d 張圖片</string>
+    <string name="parse_video_send_files">傳送檔案</string>
+    <string name="parse_video_whitelist_conversations">生效會話</string>
+    <string name="parse_video_whitelist_empty">未選擇，全部不生效（點擊選擇）</string>
+    <string name="parse_video_select_whitelist">選擇生效的會話</string>
+    <plurals name="parse_video_whitelist_count">
+        <item quantity="other">%d 個會話</item>
+    </plurals>
 </resources>

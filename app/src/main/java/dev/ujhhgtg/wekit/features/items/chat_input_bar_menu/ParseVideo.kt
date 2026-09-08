@@ -1,8 +1,10 @@
 ﻿package dev.ujhhgtg.wekit.features.items.chat_input_bar_menu
 
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -27,6 +29,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -42,10 +45,12 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import coil3.compose.AsyncImage
 import com.composables.icons.materialsymbols.MaterialSymbols
+import com.composables.icons.materialsymbols.outlined.Chevron_right
 import com.composables.icons.materialsymbols.outlined.Keyboard_arrow_down
 import com.composables.icons.materialsymbols.outlined.Keyboard_arrow_up
 import com.composables.icons.materialsymbols.outlined.Video_file
 import dev.ujhhgtg.wekit.R
+import dev.ujhhgtg.wekit.features.api.core.WeDatabaseApi
 import dev.ujhhgtg.wekit.features.api.core.WeMessageApi
 import dev.ujhhgtg.wekit.features.api.core.models.MessageInfo
 import dev.ujhhgtg.wekit.features.api.ui.WeChatInputBarMenuApi
@@ -55,14 +60,16 @@ import dev.ujhhgtg.wekit.features.core.FeatureCategoryIds
 import dev.ujhhgtg.wekit.preferences.WePrefs.Companion.prefOption
 import dev.ujhhgtg.wekit.ui.content.AlertDialogContent
 import dev.ujhhgtg.wekit.ui.content.Button
+import dev.ujhhgtg.wekit.ui.content.ContactsSelector
 import dev.ujhhgtg.wekit.ui.content.TextButton
+import dev.ujhhgtg.wekit.ui.content.m3.BaseWidget
+import dev.ujhhgtg.wekit.ui.content.m3.SegmentedColumn
 import dev.ujhhgtg.wekit.ui.content.m3.SwitchWidget
 import dev.ujhhgtg.wekit.ui.utils.showComposeDialog
 import dev.ujhhgtg.wekit.utils.AndroidAudioDecoder
 import dev.ujhhgtg.wekit.utils.AudioUtils
 import dev.ujhhgtg.wekit.utils.HostInfo
 import dev.ujhhgtg.wekit.utils.WeLogger
-import dev.ujhhgtg.wekit.utils.android.copyToClipboard
 import dev.ujhhgtg.wekit.utils.android.readTextFromClipboard
 import dev.ujhhgtg.wekit.utils.android.showToast
 import kotlin.io.path.absolutePathString
@@ -116,6 +123,9 @@ object ParseVideo : ClickableFeature() {
     private var saveDir by prefOption("parse_video_save_dir", "")
     private var autoReply by prefOption("parse_video_auto_reply", false)
 
+    /** 自动解析白名单：空 = 所有群聊生效；非空 = 仅选中的会话（群聊或私聊用户）生效。 */
+    private var autoReplyWhitelist by prefOption("parse_video_whitelist", emptySet<String>())
+
     private fun defaultSaveDir(): String =
         (KnownPaths.downloads / "ParseVideo").absolutePathString()
 
@@ -160,6 +170,8 @@ object ParseVideo : ClickableFeature() {
     override fun onClick(context: androidx.activity.ComponentActivity) {
         showComposeDialog(context, directlyDismissable = false) {
             var autoReplyChecked by remember { mutableStateOf(autoReply) }
+            var whitelistRevision by remember { mutableIntStateOf(0) }
+            val whitelistCount = remember(whitelistRevision) { autoReplyWhitelist.size }
             AlertDialogContent(
                 title = { Text(stringResource(R.string.feature_parse_video_name)) },
                 text = {
@@ -177,6 +189,31 @@ object ParseVideo : ClickableFeature() {
                                 autoReply = it
                             },
                         )
+                        SegmentedColumn(contentPadding = PaddingValues(0.dp)) {
+                            item {
+                                BaseWidget(
+                                    iconPlaceholder = false,
+                                    title = stringResource(R.string.parse_video_whitelist_conversations),
+                                    description = if (whitelistCount == 0) {
+                                        stringResource(R.string.parse_video_whitelist_empty)
+                                    } else {
+                                        localizedChatInputQuantity(
+                                            R.plurals.parse_video_whitelist_count,
+                                            whitelistCount,
+                                            whitelistCount,
+                                        )
+                                    },
+                                    onClick = { showWhitelistSelector(context) { whitelistRevision++ } },
+                                    trailingContent = {
+                                        Icon(
+                                            MaterialSymbols.Outlined.Chevron_right,
+                                            contentDescription = null,
+                                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        )
+                                    },
+                                )
+                            }
+                        }
                     }
                 },
                 dismissButton = {
@@ -185,6 +222,27 @@ object ParseVideo : ClickableFeature() {
                     }
                 },
             )
+        }
+    }
+
+    /** 白名单多选：好友 + 群聊一起列出，选中即生效（空集 = 全部群聊生效）。 */
+    private fun showWhitelistSelector(context: android.content.Context, onUpdated: () -> Unit) {
+        val contacts = runCatching {
+            WeDatabaseApi.getFriends() + WeDatabaseApi.getGroups()
+        }.getOrElse {
+            WeLogger.e(TAG, "failed to load contacts for whitelist", it)
+            emptyList()
+        }
+        showComposeDialog(context) {
+            ContactsSelector(
+                title = stringResource(R.string.parse_video_select_whitelist),
+                contacts = contacts,
+                initialSelectedWxIds = autoReplyWhitelist,
+                onDismiss = onDismiss,
+            ) { selected ->
+                autoReplyWhitelist = selected
+                onUpdated()
+            }
         }
     }
 
@@ -446,12 +504,13 @@ object ParseVideo : ClickableFeature() {
 
     /**
      * 当某条新消息满足条件时自动触发:
-     * 群聊 + 非自己发送 + 文本含抖音分享链接 -> 解析 -> 下载到临时目录 -> 发回该群聊。
-     * 由 hookBefore 在消息入库前调用, 不阻塞入库流程。
+     * 会话在白名单中 + 非自己发送 + 文本含抖音分享链接 -> 解析 -> 下载到临时目录 -> 发回该会话。
+     * 白名单为空时全部不生效。由 hookBefore 在消息入库前调用, 不阻塞入库流程。
      */
     private fun handleAutoReply(msgInfo: MessageInfo) {
         try {
-            if (!msgInfo.isInGroupChat) return
+            // 白名单模式：仅选中的会话（群聊或私聊用户）生效；未选择则全部不生效
+            if (autoReplyWhitelist.isEmpty() || msgInfo.talker !in autoReplyWhitelist) return
             if (msgInfo.type?.isText != true) return
             if (msgInfo.isSelfSender) return
 
@@ -750,12 +809,6 @@ fun showParseDialog(context: android.content.Context) {
                 }
             }
 
-            fun copyDirectLink() {
-                val data = parseResult?.parsedData() ?: return
-                runCatching { copyToClipboard(appContext, data.video_link) }
-                showToast(localizedChatInputString(R.string.parse_video_copied))
-            }
-
             fun deleteDownloadedFile() {
                 downloadedFiles.forEach { file ->
                     runCatching { file.delete() }
@@ -873,14 +926,6 @@ fun showParseDialog(context: android.content.Context) {
                         parseResult?.let { r ->
                             val data = r.parsedData() ?: return@let
                             Spacer(Modifier.height(8.dp))
-                            if (r.imageList.isNotEmpty()) {
-                                Text(
-                                    text = localizedChatInputString(R.string.parse_video_gallery_detected, r.imageList.size),
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.primary,
-                                )
-                                Spacer(Modifier.height(4.dp))
-                            }
                             Surface(
                                 shape = RoundedCornerShape(16.dp),
                                 color = MaterialTheme.colorScheme.surfaceContainerLow,
@@ -1053,6 +1098,36 @@ fun showParseDialog(context: android.content.Context) {
                                         Spacer(Modifier.height(8.dp))
                                     }
 
+                                    // ===== 图集预览（横滑缩略图） =====
+                                    if (r.imageList.isNotEmpty()) {
+                                        Spacer(Modifier.height(8.dp))
+                                        Row(
+                                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .horizontalScroll(rememberScrollState()),
+                                        ) {
+                                            r.imageList.forEachIndexed { index, imgUrl ->
+                                                Column {
+                                                    AsyncImage(
+                                                        model = imgUrl,
+                                                        contentDescription = "$index",
+                                                        modifier = Modifier
+                                                            .size(width = 96.dp, height = 128.dp)
+                                                            .clip(RoundedCornerShape(8.dp)),
+                                                        contentScale = ContentScale.Crop,
+                                                    )
+                                                }
+                                            }
+                                        }
+                                        Spacer(Modifier.height(4.dp))
+                                        Text(
+                                            text = localizedChatInputString(R.string.parse_video_gallery_detected, r.imageList.size),
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        )
+                                    }
+
                                 Spacer(Modifier.height(8.dp))
 
                                 // ===== 下载状态 =====
@@ -1144,34 +1219,24 @@ fun showParseDialog(context: android.content.Context) {
                             }
                         }
                     } else if (r != null) {
-                        Column(modifier = Modifier.fillMaxWidth()) {
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            Button(
+                                onClick = { sendDownloadedFiles() },
+                                modifier = Modifier.weight(1f),
                             ) {
-                                Button(
-                                    onClick = { sendDownloadedFiles() },
-                                    modifier = Modifier.weight(1f),
-                                ) {
-                                    Text(stringResource(R.string.parse_video_send_video))
-                                }
-                                TextButton(
-                                    onClick = { copyDirectLink() },
-                                ) {
-                                    Text(stringResource(R.string.parse_video_copy_link))
-                                }
+                                Text(stringResource(R.string.parse_video_send_files))
                             }
-                            Spacer(Modifier.height(4.dp))
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            OutlinedButton(
+                                onClick = { deleteDownloadedFile() },
+                                modifier = Modifier.weight(1f),
                             ) {
-                                TextButton(
-                                    onClick = { deleteDownloadedFile() },
-                                ) {
-                                    Text(stringResource(R.string.parse_video_delete))
-                                }
-                                Spacer(Modifier.weight(1f))
+                                Text(
+                                    stringResource(R.string.parse_video_delete),
+                                    color = MaterialTheme.colorScheme.error,
+                                )
                             }
                         }
                     }

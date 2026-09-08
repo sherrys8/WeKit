@@ -4001,7 +4001,6 @@
     <string name="parse_video_auto_reply">群聊抖音链接自动解析</string>
     <string name="parse_video_auto_reply_description">群聊里有人发抖音分享链接时，自动解析并直接把无水印视频发回该群聊</string>
     <string name="parse_video_download">下载视频</string>
-    <string name="parse_video_copy_link">复制直链</string>
     <string name="parse_video_send_video">发送视频</string>
     <string name="parse_video_delete">删除文件</string>
     <string name="parse_video_downloading">下载中...</string>
@@ -4019,4 +4018,11 @@
     <string name="parse_video_music_download_failed">音乐提取失败</string>
     <string name="parse_video_download_images">下载全部图片</string>
     <string name="parse_video_gallery_detected">检测到图集：%1$d 张图片</string>
+    <string name="parse_video_send_files">发送文件</string>
+    <string name="parse_video_whitelist_conversations">生效会话</string>
+    <string name="parse_video_whitelist_empty">未选择，全部不生效（点击选择）</string>
+    <string name="parse_video_select_whitelist">选择生效的会话</string>
+    <plurals name="parse_video_whitelist_count">
+        <item quantity="other">%d 个会话</item>
+    </plurals>
 </resources>

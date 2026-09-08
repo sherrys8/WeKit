@@ -3973,7 +3973,6 @@
     <string name="parse_video_auto_reply">Auto-parse Douyin links in groups</string>
     <string name="parse_video_auto_reply_description">When someone sends a Douyin share link in a group chat, automatically parse and send the watermark-free video back</string>
     <string name="parse_video_download">Download</string>
-    <string name="parse_video_copy_link">Copy Link</string>
     <string name="parse_video_send_video">Send Video</string>
     <string name="parse_video_delete">Delete File</string>
     <string name="parse_video_downloading">Downloading...</string>
@@ -3991,4 +3990,11 @@
     <string name="parse_video_music_download_failed">Music extraction failed</string>
     <string name="parse_video_download_images">Download All Images</string>
     <string name="parse_video_gallery_detected">Image gallery detected: %1$d images</string>
+    <string name="parse_video_send_files">Send Files</string>
+    <string name="parse_video_whitelist_conversations">Enabled conversations</string>
+    <string name="parse_video_whitelist_empty">Disabled everywhere (tap to select)</string>
+    <string name="parse_video_select_whitelist">Select enabled conversations</string>
+    <plurals name="parse_video_whitelist_count">
+        <item quantity="other">%d conversations</item>
+    </plurals>
 </resources>
