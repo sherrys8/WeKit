@@ -1,4 +1,4 @@
-﻿package dev.ujhhgtg.wekit.features.items.chat_input_bar_menu
+package dev.ujhhgtg.wekit.features.items.chat_input_bar_menu
 
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
@@ -68,8 +68,6 @@ import dev.ujhhgtg.wekit.ui.content.m3.BaseWidget
 import dev.ujhhgtg.wekit.ui.content.m3.SegmentedColumn
 import dev.ujhhgtg.wekit.ui.content.m3.SwitchWidget
 import dev.ujhhgtg.wekit.ui.utils.showComposeDialog
-import dev.ujhhgtg.wekit.utils.AndroidAudioDecoder
-import dev.ujhhgtg.wekit.utils.AudioUtils
 import dev.ujhhgtg.wekit.utils.HostInfo
 import dev.ujhhgtg.wekit.utils.WeLogger
 import dev.ujhhgtg.wekit.utils.android.readTextFromClipboard
@@ -112,6 +110,9 @@ object ParseVideo : ClickableFeature() {
 
     /** 备用解析线路：kit9 聚合解析（主线路失败时自动切换）。 */
     private const val PARSE_API = "https://apis.kit9.cn/api/aggregate_videos/api.php"
+
+    /** 第三备用线路：dovis 小红书解析（前两条线路均失败时使用）。 */
+    private const val PARSE_API_XHS = "http://api.dovis.work/api/xhs.php?url="
     private const val DEFAULT_BUFFER_SIZE = 8192
 
     private val urlRegex = Regex("""https?://[\w\-._~:/?#\[\]@!$&'()*+,;=%]+""")
@@ -119,6 +120,12 @@ object ParseVideo : ClickableFeature() {
     /** 抖音分享链接（v.douyin.com 短链 / www.douyin.com / iesdouyin 等）。 */
     private val douyinUrlRegex = Regex(
         """https?://(?:[\w\-.]*douyin\.com|v\.douyin\.com|iesdouyin\.com)/[\w\-._~:/?#\[\]@!$&'()*+,;=%]+""",
+        RegexOption.IGNORE_CASE,
+    )
+
+    /** 小红书分享链接（xiaohongshu.com / xhslink.com / xhslink.cn 短链）。 */
+    private val xhsUrlRegex = Regex(
+        """https?://(?:[\w\-.]*xiaohongshu\.com|xhslink\.com|xhslink\.cn)/[\w\-._~:/?#\[\]@!$&'()*+,;=%]+""",
         RegexOption.IGNORE_CASE,
     )
 
@@ -170,7 +177,7 @@ object ParseVideo : ClickableFeature() {
     }
 
     override fun onClick(context: androidx.activity.ComponentActivity) {
-        showComposeDialog(context, directlyDismissable = false) {
+        showComposeDialog(context) {
             var autoReplyChecked by remember { mutableStateOf(autoReply) }
             var whitelistRevision by remember { mutableIntStateOf(0) }
             val whitelistCount = remember(whitelistRevision) { autoReplyWhitelist.size }
@@ -244,6 +251,7 @@ object ParseVideo : ClickableFeature() {
             ) { selected ->
                 autoReplyWhitelist = selected
                 onUpdated()
+                onDismiss()
             }
         }
     }
@@ -292,7 +300,7 @@ object ParseVideo : ClickableFeature() {
 
     // ==================== 主线路（dy.51web.eu.org）数据模型 ====================
 
-    /** 51web 解析响应：{code, msg, data:{title, video_list:[{url,level,isDisclaimer}], cover, music, images}} */
+    /** 51web 解析响应：{code, msg, data:{title, video_list:[{url,level,isDisclaimer}], cover, images}}（music 字段已不使用，靠 ignoreUnknownKeys 忽略） */
     @Serializable
     private data class PrimaryParseResult(
         val code: Int = 0,
@@ -304,7 +312,6 @@ object ParseVideo : ClickableFeature() {
     private data class PrimaryParseData(
         val title: String = "",
         val cover: String = "",
-        val music: String = "",
         val video_list: List<PrimaryVideoEntry> = emptyList(),
         val images: List<String> = emptyList(),
     )
@@ -314,6 +321,27 @@ object ParseVideo : ClickableFeature() {
         val url: String = "",
         val level: String = "",
         val isDisclaimer: Boolean = false,
+    )
+
+    // ==================== 第三备用线路（dovis 小红书）数据模型 ====================
+
+    /** dovis 小红书解析响应：{code, msg, data:{author, authorID, title, desc, avatar, cover, url}} */
+    @Serializable
+    private data class XhsParseResult(
+        val code: Int = 0,
+        val msg: String = "",
+        val data: XhsParseData? = null,
+    )
+
+    @Serializable
+    private data class XhsParseData(
+        val author: String? = null,
+        val title: String? = null,
+        val desc: String? = null,
+        val avatar: String? = null,
+        val cover: String? = null,
+        val url: String? = null,
+        val images: List<String> = emptyList(),
     )
 
     // ==================== 解析 + 下载 + 发送 ====================
@@ -347,13 +375,17 @@ object ParseVideo : ClickableFeature() {
     }
 
     private fun parseVideo(link: String): Result<VideoParseResult> = runCatching {
-        // 主线路优先：dy.51web.eu.org（多清晰度无水印）；失败/无有效地址自动回退 kit9 聚合解析
+        // 主线路优先：dy.51web.eu.org（多清晰度无水印）；失败/无有效地址自动回退 kit9 聚合解析；
+        // 前两条都失败再回退 dovis 小红书解析（对小红书链接尤其有效）
         parseByPrimary(link).getOrElse { primaryError ->
             WeLogger.w(TAG, "primary parse failed, fallback to backup: ${primaryError.message}")
             parseByBackup(link).getOrElse { backupError ->
-                // 两条线路都失败：优先抛备用线路错误（其信息更通用），日志保留主线路原因
-                WeLogger.e(TAG, "backup parse also failed", backupError)
-                throw backupError
+                WeLogger.w(TAG, "backup parse failed, fallback to xhs: ${backupError.message}")
+                parseByXhs(link).getOrElse { xhsError ->
+                    // 三条线路都失败：抛最后一条的错误，日志保留前两条原因
+                    WeLogger.e(TAG, "xhs parse also failed (primary: ${primaryError.message}, backup: ${backupError.message})", xhsError)
+                    throw xhsError
+                }
             }
         }
     }
@@ -447,6 +479,41 @@ object ParseVideo : ClickableFeature() {
                 data = json.parseToJsonElement(json.encodeToString(normalized)),
                 qualityList = emptyList(),
                 imageList = galleryImages,
+            )
+        }
+    }
+
+    /** 第三备用线路：dovis 小红书解析（http 接口，视频直链无水印；支持 xiaohongshu.com / xhslink 短链）。 */
+    private fun parseByXhs(link: String): Result<VideoParseResult> = runCatching {
+        val url = PARSE_API_XHS + java.net.URLEncoder.encode(link, "UTF-8")
+        val request = Request.Builder().url(url).get().build()
+        httpClient.newCall(request).execute().use { resp ->
+            if (!resp.isSuccessful) error("小红书线路请求失败: HTTP ${resp.code}")
+            val body = resp.body?.string() ?: error("小红书线路响应为空")
+            val result = json.decodeFromString<XhsParseResult>(body)
+            require(result.code == 200) { result.msg.ifBlank { "小红书线路解析失败 (code=${result.code})" } }
+            val data = result.data ?: error("小红书线路返回数据为空")
+            val videoUrl = data.url.orEmpty().takeIf { it.startsWith("http") }
+            val images = data.images.filter { it.startsWith("http") }
+            if (videoUrl == null && images.isEmpty()) error("小红书线路未返回可用的视频/图片地址")
+            WeLogger.i(TAG, "xhs parse ok, video=${videoUrl != null}, images=${images.size}")
+            VideoParseResult(
+                code = 200,
+                msg = "success",
+                data = json.parseToJsonElement(
+                    json.encodeToString(
+                        VideoData(
+                            video_title = data.title.orEmpty().ifBlank { data.desc.orEmpty() },
+                            video_cover = data.cover.orEmpty(),
+                            video_link = videoUrl.orEmpty(),
+                            author = data.author.takeIf { !it.isNullOrBlank() }?.let {
+                                AuthorData(name = it, avatar = data.avatar.orEmpty())
+                            },
+                        ),
+                    ),
+                ),
+                qualityList = emptyList(),
+                imageList = images,
             )
         }
     }
@@ -598,20 +665,16 @@ fun showParseDialog(context: android.content.Context) {
             var errorMsg by remember { mutableStateOf<String?>(null) }
             var parseResult by remember { mutableStateOf<VideoParseResult?>(null) }
             var downloadedFiles by remember { mutableStateOf<List<java.io.File>>(emptyList()) }
-            var musicFile by remember { mutableStateOf<java.io.File?>(null) }
             // 多清晰度选择：主线路返回的档位列表 + 当前选中 URL（默认第一档=最高清）
             var qualityList by remember { mutableStateOf<List<Pair<String, String>>>(emptyList()) }
             var selectedQualityUrl by remember { mutableStateOf("") }
-            // 主线路直出的封面/音乐地址（可一键保存）
+            // 主线路直出的封面地址（可一键保存）
             var directCoverUrl by remember { mutableStateOf("") }
-            var directMusicUrl by remember { mutableStateOf("") }
             var savingCover by remember { mutableStateOf(false) }
-            var downloadingMusic by remember { mutableStateOf(false) }
             var downloading by remember { mutableStateOf(false) }
             var downloadProgress by remember { mutableFloatStateOf(0f) }
             var sending by remember { mutableStateOf(false) }
             var pendingSendAfterParse by remember { mutableStateOf(false) }
-            var extractingMusic by remember { mutableStateOf(false) }
             val scope = rememberCoroutineScope()
             val appContext = LocalContext.current.applicationContext
 
@@ -676,11 +739,9 @@ fun showParseDialog(context: android.content.Context) {
                 errorMsg = null
                 parseResult = null
                 downloadedFiles = emptyList()
-                musicFile = null
                 qualityList = emptyList()
                 selectedQualityUrl = ""
                 directCoverUrl = ""
-                directMusicUrl = ""
                 scope.launch {
                     val parsed = withContext(Dispatchers.IO) { parseVideo(trimmed) }
                     loading = false
@@ -693,7 +754,7 @@ fun showParseDialog(context: android.content.Context) {
                                 return@fold
                             }
                             parseResult = r
-                            // 多清晰度与直出封面/音乐（仅主线路携带）
+                            // 多清晰度与直出封面（仅主线路携带）
                             qualityList = r.qualityList
                             selectedQualityUrl = r.qualityList.firstOrNull()?.second
                                 ?: r.parsedData()?.video_link.orEmpty()
@@ -702,7 +763,6 @@ fun showParseDialog(context: android.content.Context) {
                                     r.data.toString(),
                                 )
                                 directCoverUrl = d.cover
-                                directMusicUrl = d.music
                             }
                             if (pendingSendAfterParse) {
                                 pendingSendAfterParse = false
@@ -819,47 +879,6 @@ fun showParseDialog(context: android.content.Context) {
                 showToast(localizedChatInputString(R.string.parse_video_deleted))
             }
 
-            fun extractMusic() {
-                val data = parseResult?.parsedData() ?: return
-                if (extractingMusic) return
-                extractingMusic = true
-                errorMsg = null
-                scope.launch {
-                    val result: Result<Triple<java.io.File, Int, Int>> = withContext(Dispatchers.IO) {
-                        runCatching {
-                            val dir = ensureSaveDir()
-                            // 1. 下载视频 mp4
-                            val videoFile = java.io.File(dir, "video-${UUID.randomUUID()}.mp4")
-                            val dl = downloadVideo(data.video_link, videoFile).getOrElse { e -> throw e }
-                            // 2. MediaExtractor 提取音轨 -> PCM
-                            val pcmFile = java.io.File(dir, "audio-${UUID.randomUUID()}.pcm")
-                            val decoded = AndroidAudioDecoder.decodeToPcm16(dl.absolutePath, pcmFile)
-                            // 3. PCM -> MP3
-                            val mp3File = java.io.File(dir, "music-${UUID.randomUUID()}.mp3")
-                            val ok = AudioUtils.pcmToMp3(pcmFile.absolutePath, mp3File.absolutePath)
-                            // 清理中间文件
-                            pcmFile.delete()
-                            if (!ok) {
-                                videoFile.delete()
-                                throw IllegalStateException("PCM 转 MP3 失败")
-                            }
-                            Triple(mp3File, decoded.sampleRate, decoded.channelCount)
-                        }
-                    }
-                    extractingMusic = false
-                    result.fold(
-                        onSuccess = { (file, sampleRate, channels) ->
-                            musicFile = file
-                            showToast(localizedChatInputString(R.string.parse_video_music_downloaded) + ": ${"%.1f".format(file.length() / 1024.0 / 1024.0)}MB")
-                        },
-                        onFailure = { e ->
-                            WeLogger.e(TAG, "extract music failed", e)
-                            errorMsg = localizedChatInputString(R.string.parse_video_music_download_failed) + ": ${e.message.orEmpty()}"
-                        },
-                    )
-                }
-            }
-
             AlertDialogContent(
                 title = { Text(stringResource(R.string.feature_parse_video_name)) },
                 text = {
@@ -924,7 +943,7 @@ fun showParseDialog(context: android.content.Context) {
                             )
                         }
 
-                        // ===== 解析结果卡片（封面 + 信息 + 清晰度 + 保存封面/音乐） =====
+                        // ===== 解析结果卡片（封面 + 信息 + 清晰度 + 保存封面） =====
                         parseResult?.let { r ->
                             val data = r.parsedData() ?: return@let
                             Spacer(Modifier.height(8.dp))
@@ -1009,93 +1028,47 @@ fun showParseDialog(context: android.content.Context) {
 
                                     Spacer(Modifier.height(10.dp))
 
-                                    if (directCoverUrl.isNotBlank() || directMusicUrl.isNotBlank()) {
-                                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                            if (directCoverUrl.isNotBlank()) {
-                                                OutlinedButton(
-                                                    onClick = {
-                                                        savingCover = true
-                                                        scope.launch {
-                                                            val result = withContext(Dispatchers.IO) {
-                                                                runCatching {
-                                                                    val dir = ensureSaveDir()
-                                                                    val ext = if (directCoverUrl.contains(".png")) "png" else "jpg"
-                                                                    val out = java.io.File(dir, "cover-${UUID.randomUUID()}.$ext")
-                                                                    val req = Request.Builder().url(directCoverUrl).get().build()
-                                                                    httpClient.newCall(req).execute().use { resp ->
-                                                                        require(resp.isSuccessful) { "HTTP ${resp.code}" }
-                                                                        resp.body.byteStream().use { ins ->
-                                                                            out.outputStream().use { ins.copyTo(it) }
-                                                                        }
-                                                                    }
-                                                                    out
+                                    if (directCoverUrl.isNotBlank()) {
+                                        OutlinedButton(
+                                            onClick = {
+                                                savingCover = true
+                                                scope.launch {
+                                                    val result = withContext(Dispatchers.IO) {
+                                                        runCatching {
+                                                            val dir = ensureSaveDir()
+                                                            val ext = if (directCoverUrl.contains(".png")) "png" else "jpg"
+                                                            val out = java.io.File(dir, "cover-${UUID.randomUUID()}.$ext")
+                                                            val req = Request.Builder().url(directCoverUrl).get().build()
+                                                            httpClient.newCall(req).execute().use { resp ->
+                                                                require(resp.isSuccessful) { "HTTP ${resp.code}" }
+                                                                resp.body.byteStream().use { ins ->
+                                                                    out.outputStream().use { ins.copyTo(it) }
                                                                 }
                                                             }
-                                                            savingCover = false
-                                                            result.fold(
-                                                                onSuccess = { file ->
-                                                                    showToast(
-                                                                        localizedChatInputString(R.string.parse_video_cover_saved) +
-                                                                            " (${"%.1f".format(file.length() / 1024.0)}KB)",
-                                                                    )
-                                                                },
-                                                                onFailure = { e ->
-                                                                    WeLogger.e(TAG, "save cover failed", e)
-                                                                    errorMsg = e.message ?: "保存封面失败"
-                                                                },
-                                                            )
+                                                            out
                                                         }
-                                                    },
-                                                    enabled = !savingCover,
-                                                ) {
-                                                    Text(
-                                                        if (savingCover) stringResource(R.string.parse_video_saving_cover)
-                                                        else stringResource(R.string.parse_video_save_cover),
+                                                    }
+                                                    savingCover = false
+                                                    result.fold(
+                                                        onSuccess = { file ->
+                                                            showToast(
+                                                                localizedChatInputString(R.string.parse_video_cover_saved) +
+                                                                    " (${"%.1f".format(file.length() / 1024.0)}KB)",
+                                                            )
+                                                        },
+                                                        onFailure = { e ->
+                                                            WeLogger.e(TAG, "save cover failed", e)
+                                                            errorMsg = e.message ?: "保存封面失败"
+                                                        },
                                                     )
                                                 }
-                                            }
-                                            if (directMusicUrl.isNotBlank()) {
-                                                OutlinedButton(
-                                                    onClick = {
-                                                        downloadingMusic = true
-                                                        scope.launch {
-                                                            val result = withContext(Dispatchers.IO) {
-                                                                runCatching {
-                                                                    val dir = ensureSaveDir()
-                                                                    val out = java.io.File(dir, "music-${UUID.randomUUID()}.mp3")
-                                                                    val req = buildRequest(directMusicUrl)
-                                                                    httpClient.newCall(req).execute().use { resp ->
-                                                                        require(resp.isSuccessful) { "HTTP ${resp.code}" }
-                                                                        resp.body.byteStream().use { ins ->
-                                                                            out.outputStream().use { ins.copyTo(it) }
-                                                                        }
-                                                                    }
-                                                                    out
-                                                                }
-                                                            }
-                                                            downloadingMusic = false
-                                                            result.fold(
-                                                                onSuccess = { file ->
-                                                                    showToast(
-                                                                        localizedChatInputString(R.string.parse_video_music_downloaded) +
-                                                                            ": ${"%.1f".format(file.length() / 1024.0 / 1024.0)}MB",
-                                                                    )
-                                                                },
-                                                                onFailure = { e ->
-                                                                    WeLogger.e(TAG, "download music failed", e)
-                                                                    errorMsg = e.message ?: "下载音乐失败"
-                                                                },
-                                                            )
-                                                        }
-                                                    },
-                                                    enabled = !downloadingMusic,
-                                                ) {
-                                                    Text(
-                                                        if (downloadingMusic) stringResource(R.string.parse_video_downloading_music)
-                                                        else stringResource(R.string.parse_video_download_music_direct),
-                                                    )
-                                                }
-                                            }
+                                            },
+                                            enabled = !savingCover,
+                                        ) {
+                                            Text(
+                                                if (savingCover) stringResource(R.string.parse_video_saving_cover)
+                                                else stringResource(R.string.parse_video_save_cover),
+                                            )
                                         }
                                         Spacer(Modifier.height(8.dp))
                                     }
@@ -1192,19 +1165,11 @@ fun showParseDialog(context: android.content.Context) {
                     if (r != null && downloadedFiles.isEmpty()) {
                         Column(horizontalAlignment = Alignment.End) {
                             if (hasVideo) {
-                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                    Button(
-                                        onClick = { doDownload() },
-                                        enabled = !downloading && !sending,
-                                    ) {
-                                        Text(stringResource(R.string.parse_video_download))
-                                    }
-                                    Button(
-                                        onClick = { extractMusic() },
-                                        enabled = !extractingMusic && !sending,
-                                    ) {
-                                        Text(stringResource(R.string.parse_video_download_music))
-                                    }
+                                Button(
+                                    onClick = { doDownload() },
+                                    enabled = !downloading && !sending,
+                                ) {
+                                    Text(stringResource(R.string.parse_video_download))
                                 }
                             }
                             if (r.imageList.isNotEmpty()) {
