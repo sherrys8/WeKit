@@ -580,7 +580,7 @@ object ParseVideo : ClickableFeature() {
 
     /**
      * 当某条新消息满足条件时自动触发:
-     * 会话在白名单中 + 非自己发送 + 文本含抖音分享链接 -> 解析 -> 下载到临时目录 -> 发回该会话。
+     * 会话在白名单中 + 非自己发送 + 文本含抖音/小红书分享链接 -> 解析 -> 下载到临时目录 -> 发回该会话。
      * 白名单为空时全部不生效。由 hookBefore 在消息入库前调用, 不阻塞入库流程。
      */
     private fun handleAutoReply(msgInfo: MessageInfo) {
@@ -590,7 +590,8 @@ object ParseVideo : ClickableFeature() {
             if (msgInfo.type?.isText != true) return
             if (msgInfo.isSelfSender) return
 
-            val link = extractDouyinUrl(msgInfo.humanReadableRepr)
+            val text = msgInfo.humanReadableRepr
+            val link = extractDouyinUrl(text).ifEmpty { extractXhsUrl(text) }
             if (link.isEmpty()) return
 
             val dedupKey = "${msgInfo.talker}|$link"
@@ -610,6 +611,10 @@ object ParseVideo : ClickableFeature() {
     /** 从消息文本中提取抖音分享链接；非抖音链接返回空串。链接外层标注的双引号一并去除。 */
     private fun extractDouyinUrl(raw: String): String =
         douyinUrlRegex.find(raw)?.value?.trim('"', '“', '”') ?: ""
+
+    /** 从消息文本中提取小红书分享链接；非小红书链接返回空串。链接外层标注的双引号一并去除。 */
+    private fun extractXhsUrl(raw: String): String =
+        xhsUrlRegex.find(raw)?.value?.trim('"', '“', '”') ?: ""
 
     /** 真正执行解析 + 下载 + 发送。所有流程在地线程执行, 调用方已持锁。 */
     private suspend fun doAutoReply(talker: String, link: String) {
