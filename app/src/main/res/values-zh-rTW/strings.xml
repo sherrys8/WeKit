@@ -3999,6 +3999,6 @@
     <string name="parse_video_downloading_music">正在下載音樂…</string>
     <string name="parse_video_download_music_direct">儲存音樂</string>
     <string name="parse_video_music_download_failed">音樂擷取失敗</string>
-    <string name="parse_video_download_images">涓嬭級鍏ㄩ儴鍦栫墖</string>
-    <string name="parse_video_gallery_detected">鍋垫脯鍒板湒闆嗭細%1$d 寮靛湒鐗?/string>
+    <string name="parse_video_download_images">下載全部圖片</string>
+    <string name="parse_video_gallery_detected">偵測到圖集：%1$d 張圖片</string>
 </resources>
