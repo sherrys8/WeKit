@@ -1,6 +1,7 @@
 ﻿package dev.ujhhgtg.wekit.features.items.chat_input_bar_menu
 
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -39,6 +40,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -197,7 +199,7 @@ object ParseVideo : ClickableFeature() {
                                     description = if (whitelistCount == 0) {
                                         stringResource(R.string.parse_video_whitelist_empty)
                                     } else {
-                                        localizedChatInputQuantity(
+                                        pluralStringResource(
                                             R.plurals.parse_video_whitelist_count,
                                             whitelistCount,
                                             whitelistCount,
