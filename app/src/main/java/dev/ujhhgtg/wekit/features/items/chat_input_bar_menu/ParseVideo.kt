@@ -111,7 +111,7 @@ object ParseVideo : ClickableFeature() {
     /** 备用解析线路：kit9 聚合解析（主线路失败时自动切换）。 */
     private const val PARSE_API = "https://apis.kit9.cn/api/aggregate_videos/api.php"
 
-    /** 第三备用线路：dovis 小红书解析（前两条线路均失败时使用）。 */
+    /** 小红书解析线路：dovis（识别到小红书链接时直接使用，不经前两条线路）。 */
     private const val PARSE_API_XHS = "http://api.dovis.work/api/xhs.php?url="
     private const val DEFAULT_BUFFER_SIZE = 8192
 
@@ -323,7 +323,7 @@ object ParseVideo : ClickableFeature() {
         val isDisclaimer: Boolean = false,
     )
 
-    // ==================== 第三备用线路（dovis 小红书）数据模型 ====================
+    // ==================== 小红书线路（dovis）数据模型 ====================
 
     /**
      * dovis 小红书解析响应：{code, msg, data:{author, authorID, title, desc, avatar, cover, url, imgurl}}。
@@ -378,17 +378,17 @@ object ParseVideo : ClickableFeature() {
     }
 
     private fun parseVideo(link: String): Result<VideoParseResult> = runCatching {
-        // 主线路优先：dy.51web.eu.org（多清晰度无水印）；失败/无有效地址自动回退 kit9 聚合解析；
-        // 前两条都失败再回退 dovis 小红书解析（对小红书链接尤其有效）
+        // 小红书链接（xiaohongshu.com / xhslink 短链）直接走 dovis 小红书线路：
+        // 前两条线路不支持小红书，逐级失败回退只会白等两轮超时
+        if (xhsUrlRegex.containsMatchIn(link)) {
+            return@runCatching parseByXhs(link).getOrElse { throw it }
+        }
+        // 主线路优先：dy.51web.eu.org（多清晰度无水印）；失败/无有效地址自动回退 kit9 聚合解析
         parseByPrimary(link).getOrElse { primaryError ->
             WeLogger.w(TAG, "primary parse failed, fallback to backup: ${primaryError.message}")
             parseByBackup(link).getOrElse { backupError ->
-                WeLogger.w(TAG, "backup parse failed, fallback to xhs: ${backupError.message}")
-                parseByXhs(link).getOrElse { xhsError ->
-                    // 三条线路都失败：抛最后一条的错误，日志保留前两条原因
-                    WeLogger.e(TAG, "xhs parse also failed (primary: ${primaryError.message}, backup: ${backupError.message})", xhsError)
-                    throw xhsError
-                }
+                WeLogger.w(TAG, "backup parse also failed: ${backupError.message}")
+                throw backupError
             }
         }
     }
@@ -486,7 +486,7 @@ object ParseVideo : ClickableFeature() {
         }
     }
 
-    /** 第三备用线路：dovis 小红书解析（http 接口，视频直链无水印；支持 xiaohongshu.com / xhslink 短链）。 */
+    /** 小红书解析线路：dovis（http 接口，视频直链无水印；支持 xiaohongshu.com / xhslink 短链）。 */
     private fun parseByXhs(link: String): Result<VideoParseResult> = runCatching {
         val url = PARSE_API_XHS + java.net.URLEncoder.encode(link, "UTF-8")
         // 必须携带浏览器 User-Agent：后端用请求方 UA 抓取小红书页面，默认 okhttp UA 会得到 502
