@@ -76,8 +76,11 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.util.Collections
@@ -194,6 +197,8 @@ object ParseVideo : ClickableFeature() {
         val data: JsonElement?,
         /** 主线路返回的多清晰度列表（备用线路为空）；(label, url) 按清晰度降序。 */
         val qualityList: List<Pair<String, String>> = emptyList(),
+        /** 图集（图片列表，无视频时非空）。 */
+        val imageList: List<String> = emptyList(),
     ) {
         /** 把 data(JsonElement) 解析成 VideoData 对象，兼容 data 为字符串(错误信息)的情况 */
         fun parsedData(): VideoData? {
@@ -305,14 +310,13 @@ object ParseVideo : ClickableFeature() {
             val result = json.decodeFromString<PrimaryParseResult>(body)
             require(result.code == 200) { result.msg.ifBlank { "主线路解析失败 (code=${result.code})" } }
             val data = result.data ?: error("主线路返回数据为空")
-            // 取第一个有效（非免责声明、http 开头）的视频地址；video_list 按清晰度降序排列
-            val videoUrl = data.video_list
-                .firstOrNull { !it.isDisclaimer && it.url.startsWith("http") }
-                ?.url
-                ?: error("主线路未返回可用视频地址")
-            WeLogger.i(TAG, "primary parse ok, levels=${data.video_list.map { it.level }}")
-            val qualities = data.video_list
-                .filter { !it.isDisclaimer && it.url.startsWith("http") }
+            // 图集（slides）帖子：images 非空时以图片为主，video_list 里可能是幻灯片合成视频（可空）
+            val images = data.images.filter { it.startsWith("http") }
+            val videoEntries = data.video_list.filter { !it.isDisclaimer && it.url.startsWith("http") }
+            val videoUrl = videoEntries.firstOrNull()?.url
+            if (videoUrl == null && images.isEmpty()) error("主线路未返回可用视频地址")
+            WeLogger.i(TAG, "primary parse ok, levels=${data.video_list.map { it.level }}, images=${images.size}")
+            val qualities = videoEntries
                 .map { (it.level.ifBlank { "视频" }) to it.url }
             VideoParseResult(
                 code = 200,
@@ -322,23 +326,68 @@ object ParseVideo : ClickableFeature() {
                         VideoData(
                             video_title = data.title,
                             video_cover = data.cover,
-                            video_link = videoUrl,
+                            video_link = videoUrl ?: "",
                         ),
                     ),
                 ),
                 qualityList = qualities,
+                imageList = images,
             )
         }
     }
 
-    /** 备用线路：kit9 聚合解析（原逻辑不动）。 */
+    /** 备用线路：kit9 聚合解析。图集时 video_link 为 [{type:"image",url}] 数组，需归一化。 */
     private fun parseByBackup(link: String): Result<VideoParseResult> = runCatching {
         val url = PARSE_API + "?link=" + java.net.URLEncoder.encode(link, "UTF-8")
         val request = Request.Builder().url(url).get().build()
         httpClient.newCall(request).execute().use { resp ->
             if (!resp.isSuccessful) error("请求失败: HTTP ${resp.code}")
             val body = resp.body?.string() ?: error("响应为空")
-            json.decodeFromString<VideoParseResult>(body)
+            val result = json.decodeFromString<VideoParseResult>(body)
+            if (result.code != 200) return@runCatching result
+            val dataElement = result.data ?: return@runCatching result
+            if (dataElement !is JsonObject) return@runCatching result
+            val rawVideoLink = dataElement["video_link"]
+            // 归一化：数组形式（图集/多地址）→ 取出每个 url；字符串形式 → 不动
+            val normalized = when (rawVideoLink) {
+                is JsonArray -> {
+                    val urls = rawVideoLink.mapNotNull { entry ->
+                        (entry as? JsonObject)?.get("url")?.let { (it as? JsonPrimitive)?.content }
+                    }.filter { it.startsWith("http") }
+                    val isImageGallery = urls.isNotEmpty() &&
+                        rawVideoLink.all { (it as? JsonObject)?.get("type")?.let { t -> (t as? JsonPrimitive)?.content } == "image" }
+                    VideoData(
+                        video_title = (dataElement["video_title"] as? JsonPrimitive)?.content ?: "",
+                        video_cover = (dataElement["video_cover"] as? JsonPrimitive)?.content ?: "",
+                        video_link = if (isImageGallery) "" else urls.firstOrNull() ?: "",
+                        author = (dataElement["author"] as? JsonObject)?.let {
+                            json.decodeFromJsonElement<AuthorData>(it)
+                        },
+                    )
+                }
+                else -> json.decodeFromJsonElement<VideoData>(dataElement)
+            }
+            val galleryImages = if (normalized.video_link.isBlank()) {
+                // 图集地址优先取 video_link 数组里的 url；kit9 部分响应也提供 image 字段（字符串或数组）作兜底
+                val fromVideoLink = (rawVideoLink as? JsonArray)?.mapNotNull { entry ->
+                    (entry as? JsonObject)?.get("url")?.let { (it as? JsonPrimitive)?.content }
+                }?.filter { it.startsWith("http") } ?: emptyList()
+                if (fromVideoLink.isNotEmpty()) fromVideoLink else when (val img = dataElement["image"]) {
+                    is JsonPrimitive -> listOfNotNull(img.content.takeIf { it.startsWith("http") })
+                    is JsonArray -> img.mapNotNull { entry ->
+                        ((entry as? JsonPrimitive)?.content)
+                            ?: ((entry as? JsonObject)?.get("url")?.let { (it as? JsonPrimitive)?.content })
+                    }.filter { it.startsWith("http") }
+                    else -> emptyList()
+                }
+            } else emptyList()
+            VideoParseResult(
+                code = result.code,
+                msg = result.msg,
+                data = json.parseToJsonElement(json.encodeToString(normalized)),
+                qualityList = emptyList(),
+                imageList = galleryImages,
+            )
         }
     }
 
@@ -436,24 +485,49 @@ object ParseVideo : ClickableFeature() {
                 if (parsed.code != 200) {
                     error("parse failed: ${parsed.msg}")
                 }
-                val data = parsed.parsedData() ?: error("no video data")
-                val url = data.video_link
-                if (url.isBlank()) error("empty video link")
-
-                val dir = tempSendDir(context).apply { mkdirs() }
-                val out = java.io.File(dir, "auto-${UUID.randomUUID()}.mp4")
-                downloadVideo(url, out).getOrElse { throw it }
-
-                val sent = WeMessageApi.sendVideo(talker, out.absolutePath)
-                if (!sent) {
-                    out.delete()
-                    error("sendVideo failed")
-                }
+                sendParseResult(talker, parsed, tempSendDir(context))
             }
         }
         if (result.isFailure) {
             WeLogger.e(TAG, "auto reply failed", result.exceptionOrNull() ?: error("auto reply failed"))
         }
+    }
+
+    /**
+     * 下载并发送一条解析结果：video_link 有值 → 发视频；否则按 imageList 逐张发图片。
+     * 返回发送的媒体数量，全部失败抛异常。
+     */
+    private fun sendParseResult(
+        talker: String,
+        parsed: VideoParseResult,
+        dir: java.io.File,
+        onProgress: (downloaded: Long, total: Long) -> Unit = { _, _ -> },
+    ): Int {
+        val data = parsed.parsedData() ?: error("no video data")
+        dir.mkdirs()
+        var sentCount = 0
+        if (data.video_link.isNotBlank()) {
+            val out = java.io.File(dir, "auto-${UUID.randomUUID()}.mp4")
+            downloadVideo(data.video_link, out, onProgress).getOrElse { throw it }
+            val sent = WeMessageApi.sendVideo(talker, out.absolutePath)
+            if (!sent) {
+                out.delete()
+                error("sendVideo failed")
+            }
+            sentCount = 1
+        } else {
+            for ((index, imgUrl) in parsed.imageList.withIndex()) {
+                val out = java.io.File(dir, "auto-${UUID.randomUUID()}-$index.jpg")
+                downloadVideo(imgUrl, out, onProgress).getOrElse { e ->
+                    WeLogger.w(TAG, "image $index download failed: ${e.message}")
+                    continue
+                }
+                val sent = WeMessageApi.sendImage(talker, out.absolutePath)
+                if (sent) sentCount++ else out.delete()
+            }
+            if (sentCount == 0) error("no media sent")
+        }
+        return sentCount
     }
 
 fun showParseDialog(context: android.content.Context) {
@@ -462,7 +536,7 @@ fun showParseDialog(context: android.content.Context) {
             var loading by remember { mutableStateOf(false) }
             var errorMsg by remember { mutableStateOf<String?>(null) }
             var parseResult by remember { mutableStateOf<VideoParseResult?>(null) }
-            var downloadedFile by remember { mutableStateOf<java.io.File?>(null) }
+            var downloadedFiles by remember { mutableStateOf<List<java.io.File>>(emptyList()) }
             var musicFile by remember { mutableStateOf<java.io.File?>(null) }
             // 多清晰度选择：主线路返回的档位列表 + 当前选中 URL（默认第一档=最高清）
             var qualityList by remember { mutableStateOf<List<Pair<String, String>>>(emptyList()) }
@@ -489,7 +563,13 @@ fun showParseDialog(context: android.content.Context) {
                 }
             }
 
-            fun downloadAndSend(data: VideoData) {
+            fun downloadAndSend(result: VideoParseResult) {
+                val data = result.parsedData()
+                if (data == null || data.video_link.isBlank() && result.imageList.isEmpty()) {
+                    pendingSendAfterParse = false
+                    errorMsg = localizedChatInputString(R.string.parse_video_api_error)
+                    return
+                }
                 val talker = WeCurrentConversationApi.value
                 if (talker.isBlank()) {
                     pendingSendAfterParse = false
@@ -501,32 +581,25 @@ fun showParseDialog(context: android.content.Context) {
                 downloadProgress = 0f
                 errorMsg = null
                 scope.launch {
-                    val saveResult = withContext(Dispatchers.IO) {
-                        val dir = java.io.File(appContext.cacheDir ?: appContext.filesDir, "parse_video_send")
-                            .apply { mkdirs() }
-                        val out = java.io.File(dir, "send-${UUID.randomUUID()}.mp4")
-                        downloadVideo(data.video_link, out) { downloaded, total ->
-                            if (total > 0 && downloaded > 0) {
-                                downloadProgress = (downloaded.toFloat() / total).coerceIn(0f, 1f)
+                    val sendResult = withContext(Dispatchers.IO) {
+                        runCatching {
+                            val dir = java.io.File(appContext.cacheDir ?: appContext.filesDir, "parse_video_send")
+                            sendParseResult(talker, result, dir) { downloaded, total ->
+                                if (total > 0 && downloaded > 0) {
+                                    downloadProgress = (downloaded.toFloat() / total).coerceIn(0f, 1f)
+                                }
                             }
                         }
                     }
                     sending = false
-                    saveResult.fold(
-                        onSuccess = { file ->
-                            scope.launch {
-                                val sent = withContext(Dispatchers.IO) { WeMessageApi.sendVideo(talker, file.absolutePath) }
-                                if (sent) {
-                                    showToast(localizedChatInputString(R.string.parse_video_sent))
-                                    onDismiss()
-                                } else {
-                                    errorMsg = localizedChatInputString(R.string.parse_video_send_failed)
-                                }
-                            }
+                    sendResult.fold(
+                        onSuccess = { count ->
+                            showToast(localizedChatInputString(R.string.parse_video_sent))
+                            onDismiss()
                         },
                         onFailure = { e ->
-                            WeLogger.e(TAG, "download for send failed", e)
-                            errorMsg = localizedChatInputString(R.string.parse_video_download_failed, e.message.orEmpty())
+                            WeLogger.e(TAG, "send parse result failed", e)
+                            errorMsg = localizedChatInputString(R.string.parse_video_send_failed)
                         },
                     )
                 }
@@ -541,7 +614,7 @@ fun showParseDialog(context: android.content.Context) {
                 loading = true
                 errorMsg = null
                 parseResult = null
-                downloadedFile = null
+                downloadedFiles = emptyList()
                 musicFile = null
                 qualityList = emptyList()
                 selectedQualityUrl = ""
@@ -552,7 +625,8 @@ fun showParseDialog(context: android.content.Context) {
                     loading = false
                     parsed.fold(
                         onSuccess = { r ->
-                            if (r.code != 200 || r.parsedData()?.video_link.isNullOrBlank()) {
+                            val hasVideo = r.parsedData()?.video_link?.isNotBlank() == true
+                            if (r.code != 200 || (!hasVideo && r.imageList.isEmpty())) {
                                 pendingSendAfterParse = false
                                 errorMsg = r.msg.ifBlank { localizedChatInputString(R.string.parse_video_api_error) }
                                 return@fold
@@ -560,7 +634,8 @@ fun showParseDialog(context: android.content.Context) {
                             parseResult = r
                             // 多清晰度与直出封面/音乐（仅主线路携带）
                             qualityList = r.qualityList
-                            selectedQualityUrl = r.qualityList.firstOrNull()?.second ?: r.parsedData()!!.video_link
+                            selectedQualityUrl = r.qualityList.firstOrNull()?.second
+                                ?: r.parsedData()?.video_link.orEmpty()
                             runCatching {
                                 val d = json.decodeFromString<PrimaryParseData>(
                                     r.data.toString(),
@@ -570,7 +645,7 @@ fun showParseDialog(context: android.content.Context) {
                             }
                             if (pendingSendAfterParse) {
                                 pendingSendAfterParse = false
-                                downloadAndSend(r.parsedData()!!)
+                                downloadAndSend(r)
                             }
                         },
                         onFailure = { e ->
@@ -588,53 +663,84 @@ fun showParseDialog(context: android.content.Context) {
             }
 
             fun doSendNow() {
-                val data = parseResult?.parsedData()
-                if (data != null && data.video_link.isNotBlank()) {
-                    downloadAndSend(data)
-                } else {
-                    pendingSendAfterParse = true
-                    doParse()
+                val r = parseResult
+                if (r != null) {
+                    val data = r.parsedData()
+                    if ((data != null && data.video_link.isNotBlank()) || r.imageList.isNotEmpty()) {
+                        downloadAndSend(r)
+                        return
+                    }
                 }
+                pendingSendAfterParse = true
+                doParse()
             }
 
             fun doDownload() {
-                val data = parseResult?.parsedData() ?: return
+                val r = parseResult ?: return
+                val data = r.parsedData() ?: return
+                val isGallery = data.video_link.isBlank() && r.imageList.isNotEmpty()
                 downloading = true
                 downloadProgress = 0f
                 errorMsg = null
                 scope.launch {
                     val saveResult = withContext(Dispatchers.IO) {
-                        val dir = ensureSaveDir()
-                        val out = java.io.File(dir, "video-${UUID.randomUUID()}.mp4")
-                        downloadVideo(data.video_link, out) { downloaded, total ->
-                            if (total > 0 && downloaded > 0) {
-                                downloadProgress = (downloaded.toFloat() / total).coerceIn(0f, 1f)
+                        runCatching {
+                            val dir = ensureSaveDir()
+                            if (isGallery) {
+                                val files = mutableListOf<java.io.File>()
+                                r.imageList.forEachIndexed { index, imgUrl ->
+                                    val out = java.io.File(dir, "image-${UUID.randomUUID()}-$index.jpg")
+                                    downloadVideo(imgUrl, out) { downloaded, total ->
+                                        if (total > 0 && downloaded > 0) {
+                                            downloadProgress = (downloaded.toFloat() / total).coerceIn(0f, 1f)
+                                        }
+                                    }.onSuccess { files += it }
+                                }
+                                if (files.isEmpty()) error("无图片下载成功")
+                                files
+                            } else {
+                                val out = java.io.File(dir, "video-${UUID.randomUUID()}.mp4")
+                                downloadVideo(data.video_link, out) { downloaded, total ->
+                                    if (total > 0 && downloaded > 0) {
+                                        downloadProgress = (downloaded.toFloat() / total).coerceIn(0f, 1f)
+                                    }
+                                }.getOrThrow()
+                                listOf(out)
                             }
                         }
                     }
                     downloading = false
                     saveResult.fold(
-                        onSuccess = { file ->
-                            downloadedFile = file
+                        onSuccess = { files ->
+                            downloadedFiles = files
                             showToast(localizedChatInputString(R.string.parse_video_downloaded))
                         },
                         onFailure = { e ->
-                            WeLogger.e(TAG, "download video failed", e)
+                            WeLogger.e(TAG, "download failed", e)
                             errorMsg = localizedChatInputString(R.string.parse_video_download_failed, e.message.orEmpty())
                         },
                     )
                 }
             }
 
-            fun sendDownloadedVideo() {
-                val file = downloadedFile ?: return
+            fun sendDownloadedFiles() {
+                val r = parseResult ?: return
+                if (downloadedFiles.isEmpty()) return
                 val talker = WeCurrentConversationApi.value
                 if (talker.isBlank()) {
                     errorMsg = localizedChatInputString(R.string.parse_video_no_conversation)
                     return
                 }
                 scope.launch {
-                    val sent = withContext(Dispatchers.IO) { WeMessageApi.sendVideo(talker, file.absolutePath) }
+                    val sent = withContext(Dispatchers.IO) {
+                        downloadedFiles.all { file ->
+                            if (file.name.startsWith("image-")) {
+                                WeMessageApi.sendImage(talker, file.absolutePath)
+                            } else {
+                                WeMessageApi.sendVideo(talker, file.absolutePath)
+                            }
+                        }
+                    }
                     if (sent) {
                         showToast(localizedChatInputString(R.string.parse_video_sent))
                         onDismiss()
@@ -651,10 +757,10 @@ fun showParseDialog(context: android.content.Context) {
             }
 
             fun deleteDownloadedFile() {
-                downloadedFile?.let { file ->
+                downloadedFiles.forEach { file ->
                     runCatching { file.delete() }
                 }
-                downloadedFile = null
+                downloadedFiles = emptyList()
                 showToast(localizedChatInputString(R.string.parse_video_deleted))
             }
 
@@ -767,6 +873,14 @@ fun showParseDialog(context: android.content.Context) {
                         parseResult?.let { r ->
                             val data = r.parsedData() ?: return@let
                             Spacer(Modifier.height(8.dp))
+                            if (r.imageList.isNotEmpty()) {
+                                Text(
+                                    text = localizedChatInputString(R.string.parse_video_gallery_detected, r.imageList.size),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.primary,
+                                )
+                                Spacer(Modifier.height(4.dp))
+                            }
                             Surface(
                                 shape = RoundedCornerShape(16.dp),
                                 color = MaterialTheme.colorScheme.surfaceContainerLow,
@@ -965,12 +1079,17 @@ fun showParseDialog(context: android.content.Context) {
                                             )
                                         }
                                     }
-                                    downloadedFile != null -> {
+                                    downloadedFiles.isNotEmpty() -> {
+                                        val totalSize = downloadedFiles.sumOf { it.length() }
                                         Text(
                                             text = buildString {
                                                 append(localizedChatInputString(R.string.parse_video_downloaded))
+                                                if (downloadedFiles.size > 1) {
+                                                    append(" ×")
+                                                    append(downloadedFiles.size)
+                                                }
                                                 append(" (")
-                                                append("%.1f".format(downloadedFile!!.length() / 1024.0 / 1024.0))
+                                                append("%.1f".format(totalSize / 1024.0 / 1024.0))
                                                 append("MB)")
                                             },
                                             style = MaterialTheme.typography.bodySmall,
@@ -990,30 +1109,48 @@ fun showParseDialog(context: android.content.Context) {
                 },
                 confirmButton = {
                     // ===== 按钮组 =====
-                    val data = parseResult?.parsedData()
-                    if (data != null && downloadedFile == null) {
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Button(
-                                onClick = { doDownload() },
-                                enabled = !downloading && !sending,
-                            ) {
-                                Text(stringResource(R.string.parse_video_download))
+                    val r = parseResult
+                    val data = r?.parsedData()
+                    val hasVideo = data?.video_link?.isNotBlank() == true
+                    if (r != null && downloadedFiles.isEmpty()) {
+                        Column(horizontalAlignment = Alignment.End) {
+                            if (hasVideo) {
+                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    Button(
+                                        onClick = { doDownload() },
+                                        enabled = !downloading && !sending,
+                                    ) {
+                                        Text(stringResource(R.string.parse_video_download))
+                                    }
+                                    Button(
+                                        onClick = { extractMusic() },
+                                        enabled = !extractingMusic && !sending,
+                                    ) {
+                                        Text(stringResource(R.string.parse_video_download_music))
+                                    }
+                                }
                             }
-                            Button(
-                                onClick = { extractMusic() },
-                                enabled = !extractingMusic && !sending,
-                            ) {
-                                Text(stringResource(R.string.parse_video_download_music))
+                            if (r.imageList.isNotEmpty()) {
+                                Spacer(Modifier.height(4.dp))
+                                Button(
+                                    onClick = { doDownload() },
+                                    enabled = !downloading && !sending,
+                                ) {
+                                    Text(
+                                        if (downloading) stringResource(R.string.parse_video_downloading)
+                                        else stringResource(R.string.parse_video_download_images),
+                                    )
+                                }
                             }
                         }
-                    } else if (data != null) {
+                    } else if (r != null) {
                         Column(modifier = Modifier.fillMaxWidth()) {
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
                                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                             ) {
                                 Button(
-                                    onClick = { sendDownloadedVideo() },
+                                    onClick = { sendDownloadedFiles() },
                                     modifier = Modifier.weight(1f),
                                 ) {
                                     Text(stringResource(R.string.parse_video_send_video))

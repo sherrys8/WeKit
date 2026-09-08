@@ -4017,4 +4017,6 @@
     <string name="parse_video_downloading_music">正在下载音乐…</string>
     <string name="parse_video_download_music_direct">保存音乐</string>
     <string name="parse_video_music_download_failed">音乐提取失败</string>
+    <string name="parse_video_download_images">涓嬭浇鍏ㄩ儴鍥剧墖</string>
+    <string name="parse_video_gallery_detected">妫€娴嬪埌鍥鹃泦锛?1$d 寮犲浘鐗?/string>
 </resources>

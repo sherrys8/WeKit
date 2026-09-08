@@ -3989,4 +3989,6 @@
     <string name="parse_video_downloading_music">Downloading music…</string>
     <string name="parse_video_download_music_direct">Save music</string>
     <string name="parse_video_music_download_failed">Music extraction failed</string>
+    <string name="parse_video_download_images">Download All Images</string>
+    <string name="parse_video_gallery_detected">Image gallery detected: %1$d images</string>
 </resources>
