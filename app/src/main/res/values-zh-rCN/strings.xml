@@ -4022,6 +4022,12 @@
     <string name="parse_video_whitelist_conversations">生效会话</string>
     <string name="parse_video_whitelist_empty">未选择，全部不生效（点击选择）</string>
     <string name="parse_video_select_whitelist">选择生效的会话</string>
+    <string name="parse_video_route_settings">切换解析线路</string>
+    <string name="parse_video_route_auto">自动（主线路优先，失败回退备用）</string>
+    <string name="parse_video_route_primary">主线路（51web · 抖音）</string>
+    <string name="parse_video_route_backup">备用线路（kit9 聚合）</string>
+    <string name="parse_video_route_xhs">小红书线路（dovis）</string>
+    <string name="parse_video_route_changed">解析线路已切换：%1$s</string>
     <plurals name="parse_video_whitelist_count">
         <item quantity="other">%d 个会话</item>
     </plurals>

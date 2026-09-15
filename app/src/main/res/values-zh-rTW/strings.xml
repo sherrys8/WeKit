@@ -4004,6 +4004,12 @@
     <string name="parse_video_whitelist_conversations">生效會話</string>
     <string name="parse_video_whitelist_empty">未選擇，全部不生效（點擊選擇）</string>
     <string name="parse_video_select_whitelist">選擇生效的會話</string>
+    <string name="parse_video_route_settings">切換解析線路</string>
+    <string name="parse_video_route_auto">自動（主線路優先，失敗回退備用）</string>
+    <string name="parse_video_route_primary">主線路（51web · 抖音）</string>
+    <string name="parse_video_route_backup">備用線路（kit9 聚合）</string>
+    <string name="parse_video_route_xhs">小紅書線路（dovis）</string>
+    <string name="parse_video_route_changed">解析線路已切換：%1$s</string>
     <plurals name="parse_video_whitelist_count">
         <item quantity="other">%d 個會話</item>
     </plurals>

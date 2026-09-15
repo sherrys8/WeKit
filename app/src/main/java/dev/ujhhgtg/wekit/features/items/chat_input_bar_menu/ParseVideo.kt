@@ -47,9 +47,11 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import coil3.compose.AsyncImage
 import com.composables.icons.materialsymbols.MaterialSymbols
+import com.composables.icons.materialsymbols.outlined.Check_circle
 import com.composables.icons.materialsymbols.outlined.Chevron_right
 import com.composables.icons.materialsymbols.outlined.Keyboard_arrow_down
 import com.composables.icons.materialsymbols.outlined.Keyboard_arrow_up
+import com.composables.icons.materialsymbols.outlined.Tune
 import com.composables.icons.materialsymbols.outlined.Video_file
 import dev.ujhhgtg.wekit.R
 import dev.ujhhgtg.wekit.features.api.core.WeDatabaseApi
@@ -115,6 +117,12 @@ object ParseVideo : ClickableFeature() {
     private const val PARSE_API_XHS = "http://api.dovis.work/api/xhs.php?url="
     private const val DEFAULT_BUFFER_SIZE = 8192
 
+    /** 线路选择（解析弹窗右上角可切换，持久化到偏好）。auto = 按默认优先级回退；其余固定走所选线路。 */
+    private const val ROUTE_AUTO = "auto"
+    private const val ROUTE_PRIMARY = "primary"
+    private const val ROUTE_BACKUP = "backup"
+    private const val ROUTE_XHS = "xhs"
+
     private val urlRegex = Regex("""https?://[\w\-._~:/?#\[\]@!$&'()*+,;=%]+""")
 
     /** 抖音分享链接（v.douyin.com 短链 / www.douyin.com / iesdouyin 等）。 */
@@ -134,6 +142,9 @@ object ParseVideo : ClickableFeature() {
 
     /** 自动解析白名单：空 = 所有群聊生效；非空 = 仅选中的会话（群聊或私聊用户）生效。 */
     private var autoReplyWhitelist by prefOption("parse_video_whitelist", emptySet<String>())
+
+    /** 当前解析线路（见 ROUTE_* 常量），手动弹窗与群聊自动回复共用同一选择。 */
+    private var parseRoute by prefOption("parse_video_route", ROUTE_AUTO)
 
     private fun defaultSaveDir(): String =
         (KnownPaths.downloads / "ParseVideo").absolutePathString()
@@ -378,17 +389,24 @@ object ParseVideo : ClickableFeature() {
     }
 
     private fun parseVideo(link: String): Result<VideoParseResult> = runCatching {
-        // 小红书链接（xiaohongshu.com / xhslink 短链）直接走 dovis 小红书线路：
+        // 小红书链接（xiaohongshu.com / xhslink 短链）固定走 dovis 小红书线路：
         // 前两条线路不支持小红书，逐级失败回退只会白等两轮超时
-        if (xhsUrlRegex.containsMatchIn(link)) {
+        val isXhsLink = xhsUrlRegex.containsMatchIn(link)
+        if (isXhsLink && parseRoute != ROUTE_XHS) {
             return@runCatching parseByXhs(link).getOrElse { throw it }
         }
-        // 主线路优先：dy.51web.eu.org（多清晰度无水印）；失败/无有效地址自动回退 kit9 聚合解析
-        parseByPrimary(link).getOrElse { primaryError ->
-            WeLogger.w(TAG, "primary parse failed, fallback to backup: ${primaryError.message}")
-            parseByBackup(link).getOrElse { backupError ->
-                WeLogger.w(TAG, "backup parse also failed: ${backupError.message}")
-                throw backupError
+        when (parseRoute) {
+            // 用户手动指定线路：严格只走所选线路，失败直接报错，不再静默回退
+            ROUTE_PRIMARY -> parseByPrimary(link).getOrElse { throw it }
+            ROUTE_BACKUP -> parseByBackup(link).getOrElse { throw it }
+            ROUTE_XHS -> parseByXhs(link).getOrElse { throw it }
+            // 默认：主线路优先（多清晰度无水印）；失败/无有效地址自动回退 kit9 聚合解析
+            else -> parseByPrimary(link).getOrElse { primaryError ->
+                WeLogger.w(TAG, "primary parse failed, fallback to backup: ${primaryError.message}")
+                parseByBackup(link).getOrElse { backupError ->
+                    WeLogger.w(TAG, "backup parse also failed: ${backupError.message}")
+                    throw backupError
+                }
             }
         }
     }
@@ -687,6 +705,9 @@ fun showParseDialog(context: android.content.Context) {
             var downloadProgress by remember { mutableFloatStateOf(0f) }
             var sending by remember { mutableStateOf(false) }
             var pendingSendAfterParse by remember { mutableStateOf(false) }
+            // 线路切换（右上角齿轮）：selectedRoute 驱动菜单 UI 刷新，parseRoute 持久化到偏好
+            var selectedRoute by remember { mutableStateOf(parseRoute) }
+            var routeMenuExpanded by remember { mutableStateOf(false) }
             val scope = rememberCoroutineScope()
             val appContext = LocalContext.current.applicationContext
 
@@ -891,8 +912,64 @@ fun showParseDialog(context: android.content.Context) {
                 showToast(localizedChatInputString(R.string.parse_video_deleted))
             }
 
+            val routeOptions = listOf(
+                ROUTE_AUTO to R.string.parse_video_route_auto,
+                ROUTE_PRIMARY to R.string.parse_video_route_primary,
+                ROUTE_BACKUP to R.string.parse_video_route_backup,
+                ROUTE_XHS to R.string.parse_video_route_xhs,
+            )
+
             AlertDialogContent(
-                title = { Text(stringResource(R.string.feature_parse_video_name)) },
+                title = {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            text = stringResource(R.string.feature_parse_video_name),
+                            modifier = Modifier.weight(1f),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        // 右上角齿轮：像文字转语音切音色一样手动切换解析线路（选择持久化，手动弹窗与自动回复共用）
+                        Box {
+                            IconButton(onClick = { routeMenuExpanded = true }) {
+                                Icon(
+                                    MaterialSymbols.Outlined.Tune,
+                                    contentDescription = stringResource(R.string.parse_video_route_settings),
+                                )
+                            }
+                            DropdownMenu(
+                                expanded = routeMenuExpanded,
+                                onDismissRequest = { routeMenuExpanded = false },
+                            ) {
+                                routeOptions.forEach { (value, labelRes) ->
+                                    val label = stringResource(labelRes)
+                                    DropdownMenuItem(
+                                        text = { Text(label) },
+                                        trailingIcon = {
+                                            if (selectedRoute == value) {
+                                                Icon(
+                                                    MaterialSymbols.Outlined.Check_circle,
+                                                    contentDescription = null,
+                                                    tint = MaterialTheme.colorScheme.primary,
+                                                )
+                                            }
+                                        },
+                                        onClick = {
+                                            selectedRoute = value
+                                            parseRoute = value
+                                            routeMenuExpanded = false
+                                            showToast(
+                                                localizedChatInputString(R.string.parse_video_route_changed, label),
+                                            )
+                                        },
+                                    )
+                                }
+                            }
+                        }
+                    }
+                },
                 text = {
                     Column(
                         modifier = Modifier
