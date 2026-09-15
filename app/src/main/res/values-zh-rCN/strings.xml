@@ -4035,6 +4035,7 @@
     <string name="parse_video_route_backup">备用线路（kit9 聚合）</string>
     <string name="parse_video_route_xhs">小红书线路（dovis）</string>
     <string name="parse_video_route_changed">解析线路已切换：%1$s</string>
+    <string name="parse_video_line_option">线路%1$d</string>
     <plurals name="parse_video_whitelist_count">
         <item quantity="other">%d 个会话</item>
     </plurals>

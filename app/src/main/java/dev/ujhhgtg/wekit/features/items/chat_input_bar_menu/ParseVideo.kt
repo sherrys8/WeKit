@@ -147,6 +147,9 @@ object ParseVideo : ClickableFeature() {
     /** 当前解析线路（见 ROUTE_* 常量），手动弹窗与群聊自动回复共用同一选择。 */
     private var parseRoute by prefOption("parse_video_route", ROUTE_AUTO)
 
+    /** 主线路请求的 pid 参数（线路1~线路7 → 数字 1~7），手动弹窗与群聊自动回复共用。 */
+    private var parsePid by prefOption("parse_video_pid", 1)
+
     private fun defaultSaveDir(): String =
         (KnownPaths.downloads / "ParseVideo").absolutePathString()
 
@@ -279,6 +282,8 @@ object ParseVideo : ClickableFeature() {
         val qualityList: List<Pair<String, String>> = emptyList(),
         /** 图集（图片列表，无视频时非空）。 */
         val imageList: List<String> = emptyList(),
+        /** 主线路直出封面；若与图集任一张相同则置空（以图集为准，UI 不再显示封面）。 */
+        val coverUrl: String = "",
         /** 备用线路多视频直链：不供逐档选择，下载时全部取下（qualityList 此时即视频列表，与图集同思路）。 */
         val downloadAllVideos: Boolean = false,
     ) {
@@ -416,8 +421,10 @@ object ParseVideo : ClickableFeature() {
 
     /** 主线路：dy.51web.eu.org。结果映射成统一的 VideoParseResult 供 UI 层无感消费。 */
     private fun parseByPrimary(link: String): Result<VideoParseResult> = runCatching {
+        // pid 为线路编号（1~7，用户左下角「线路N」选择框决定），传数字而非「线路N」文本
         val url = PARSE_API_PRIMARY +
             "?token=" + java.net.URLEncoder.encode(PARSE_API_PRIMARY_TOKEN, "UTF-8") +
+            "&pid=" + parsePid +
             "&url=" + java.net.URLEncoder.encode(link, "UTF-8")
         val request = Request.Builder().url(url).get().build()
         httpClient.newCall(request).execute().use { resp ->
@@ -434,6 +441,10 @@ object ParseVideo : ClickableFeature() {
             WeLogger.i(TAG, "primary parse ok, levels=${data.video_list.map { it.level }}, images=${images.size}")
             val qualities = videoEntries
                 .map { (it.level.ifBlank { "视频" }) to it.url }
+            // 视频帖接口也会把封面塞进 images：封面与图集重复时只保留图集，不再单独显示封面
+            val primaryCoverUrl = data.cover
+                .takeIf { it.startsWith("http") && images.none { img -> img == it } }
+                .orEmpty()
             VideoParseResult(
                 code = 200,
                 msg = "success",
@@ -448,6 +459,7 @@ object ParseVideo : ClickableFeature() {
                 ),
                 qualityList = qualities,
                 imageList = images,
+                coverUrl = primaryCoverUrl,
             )
         }
     }
@@ -761,6 +773,9 @@ fun showParseDialog(context: android.content.Context) {
             // 线路切换（右上角齿轮）：selectedRoute 驱动菜单 UI 刷新，parseRoute 持久化到偏好
             var selectedRoute by remember { mutableStateOf(parseRoute) }
             var routeMenuExpanded by remember { mutableStateOf(false) }
+            // 主线路 pid（左下角「线路N」选择框，1~7）：仅自动/主线路时展示，选择持久化
+            var selectedPid by remember { mutableIntStateOf(parsePid) }
+            var pidMenuExpanded by remember { mutableStateOf(false) }
             val scope = rememberCoroutineScope()
             val appContext = LocalContext.current.applicationContext
 
@@ -850,12 +865,9 @@ fun showParseDialog(context: android.content.Context) {
                             qualityList = r.qualityList
                             selectedQualityUrl = r.qualityList.firstOrNull()?.second
                                 ?: r.parsedData()?.video_link.orEmpty()
-                            runCatching {
-                                val d = json.decodeFromString<PrimaryParseData>(
-                                    r.data.toString(),
-                                )
-                                directCoverUrl = d.cover
-                            }
+                            // 封面直链在解析时已按「与图集重复则置空」规则归一，直接取用
+                            // （原实现把 VideoData 形态的 r.data 按 PrimaryParseData 重解码，字段名不匹配恒为空，封面从不出现在弹窗）
+                            directCoverUrl = r.coverUrl
                             if (pendingSendAfterParse) {
                                 pendingSendAfterParse = false
                                 downloadAndSend(r)
@@ -1416,8 +1428,49 @@ fun showParseDialog(context: android.content.Context) {
                     }
                 },
                 dismissButton = {
-                    TextButton(onClick = onDismiss, enabled = !loading && !sending) {
-                        Text(stringResource(R.string.dialog_cancel))
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        // 左下角线路选择：当前线路为自动/主线路时可选线路1~线路7（数字作为 pid 传给主线路接口）
+                        if (selectedRoute == ROUTE_AUTO || selectedRoute == ROUTE_PRIMARY) {
+                            Box {
+                                OutlinedButton(onClick = { pidMenuExpanded = true }) {
+                                    Text(stringResource(R.string.parse_video_line_option, selectedPid))
+                                    Icon(
+                                        MaterialSymbols.Outlined.Keyboard_arrow_down,
+                                        contentDescription = null,
+                                    )
+                                }
+                                DropdownMenu(
+                                    expanded = pidMenuExpanded,
+                                    onDismissRequest = { pidMenuExpanded = false },
+                                ) {
+                                    (1..7).forEach { n ->
+                                        DropdownMenuItem(
+                                            text = { Text(stringResource(R.string.parse_video_line_option, n)) },
+                                            trailingIcon = {
+                                                if (selectedPid == n) {
+                                                    Icon(
+                                                        MaterialSymbols.Outlined.Check_circle,
+                                                        contentDescription = null,
+                                                        tint = MaterialTheme.colorScheme.primary,
+                                                    )
+                                                }
+                                            },
+                                            onClick = {
+                                                selectedPid = n
+                                                parsePid = n
+                                                pidMenuExpanded = false
+                                            },
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                        TextButton(onClick = onDismiss, enabled = !loading && !sending) {
+                            Text(stringResource(R.string.dialog_cancel))
+                        }
                     }
                 },
                 confirmButton = {
