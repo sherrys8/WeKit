@@ -2,6 +2,7 @@ package dev.ujhhgtg.wekit.features.items.chat_input_bar_menu
 
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -708,6 +709,28 @@ object ParseVideo : ClickableFeature() {
         return sentCount
     }
 
+    /** 图集横滑缩略图行（混合内容独立区块与纯图集结果共用）。 */
+    @Composable
+    private fun GalleryThumbsRow(images: List<String>) {
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState()),
+        ) {
+            images.forEachIndexed { index, imgUrl ->
+                AsyncImage(
+                    model = imgUrl,
+                    contentDescription = "$index",
+                    modifier = Modifier
+                        .size(width = 96.dp, height = 128.dp)
+                        .clip(RoundedCornerShape(8.dp)),
+                    contentScale = ContentScale.Crop,
+                )
+            }
+        }
+    }
+
 fun showParseDialog(context: android.content.Context) {
         showComposeDialog(context, directlyDismissable = false) {
             var link by remember { mutableStateOf("") }
@@ -910,6 +933,55 @@ fun showParseDialog(context: android.content.Context) {
                 }
             }
 
+            /** 一键下载全部文件：当前选中清晰度视频 + 全部图集图片；部分失败不阻断其余。 */
+            fun doDownloadAll() {
+                val r = parseResult ?: return
+                val data = r.parsedData() ?: return
+                val videoUrl = selectedQualityUrl.ifBlank { data.video_link }
+                if (videoUrl.isBlank() && r.imageList.isEmpty()) return
+                downloading = true
+                downloadProgress = 0f
+                errorMsg = null
+                scope.launch {
+                    val saveResult = withContext(Dispatchers.IO) {
+                        runCatching {
+                            val dir = ensureSaveDir()
+                            val files = mutableListOf<java.io.File>()
+                            val onProg: (Long, Long) -> Unit = { downloaded, total ->
+                                if (total > 0 && downloaded > 0) {
+                                    downloadProgress = (downloaded.toFloat() / total).coerceIn(0f, 1f)
+                                }
+                            }
+                            if (videoUrl.isNotBlank()) {
+                                val out = java.io.File(dir, "video-${UUID.randomUUID()}.mp4")
+                                downloadVideo(videoUrl, out, onProg).onSuccess { files += it }
+                            }
+                            r.imageList.forEachIndexed { index, imgUrl ->
+                                val out = java.io.File(dir, "image-${UUID.randomUUID()}-$index.jpg")
+                                downloadVideo(imgUrl, out, onProg).onSuccess { files += it }
+                            }
+                            if (files.isEmpty()) error("无文件下载成功")
+                            files
+                        }
+                    }
+                    downloading = false
+                    saveResult.fold(
+                        onSuccess = { files ->
+                            // 同类替换、异类保留：视频/图片分别覆盖旧文件，另一类继续持有
+                            val newKinds = files.map { it.name.substringBefore("-") }.distinct()
+                            downloadedFiles = downloadedFiles.filter { old ->
+                                newKinds.none { old.name.startsWith("$it-") }
+                            } + files
+                            showToast(localizedChatInputString(R.string.parse_video_downloaded))
+                        },
+                        onFailure = { e ->
+                            WeLogger.e(TAG, "download all failed", e)
+                            errorMsg = localizedChatInputString(R.string.parse_video_download_failed, e.message.orEmpty())
+                        },
+                    )
+                }
+            }
+
             fun sendDownloadedFiles() {
                 val r = parseResult ?: return
                 if (downloadedFiles.isEmpty()) return
@@ -1007,6 +1079,7 @@ fun showParseDialog(context: android.content.Context) {
                     Column(
                         modifier = Modifier
                             .fillMaxWidth()
+                            .verticalScroll(rememberScrollState())
                             .padding(vertical = 4.dp),
                     ) {
                         OutlinedTextField(
@@ -1075,6 +1148,39 @@ fun showParseDialog(context: android.content.Context) {
                                 modifier = Modifier.fillMaxWidth(),
                             ) {
                                 Column(Modifier.padding(12.dp)) {
+                                    // 混合内容（视频+图集并存）：图集区块在前、视频区块在下，各带独立下载按钮
+                                    val isMixed = data.video_link.isNotBlank() && r.imageList.isNotEmpty()
+                                    if (isMixed) {
+                                        Text(
+                                            text = stringResource(R.string.parse_video_section_gallery),
+                                            style = MaterialTheme.typography.titleSmall,
+                                            fontWeight = FontWeight.SemiBold,
+                                        )
+                                        Spacer(Modifier.height(6.dp))
+                                        GalleryThumbsRow(r.imageList)
+                                        Spacer(Modifier.height(4.dp))
+                                        Text(
+                                            text = localizedChatInputString(R.string.parse_video_gallery_detected, r.imageList.size),
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        )
+                                        Spacer(Modifier.height(8.dp))
+                                        OutlinedButton(
+                                            onClick = { doDownload(images = true) },
+                                            enabled = !downloading && !sending,
+                                        ) {
+                                            Text(stringResource(R.string.parse_video_download_images_btn))
+                                        }
+                                        Spacer(Modifier.height(10.dp))
+                                        HorizontalDivider()
+                                        Spacer(Modifier.height(10.dp))
+                                        Text(
+                                            text = stringResource(R.string.parse_video_section_video),
+                                            style = MaterialTheme.typography.titleSmall,
+                                            fontWeight = FontWeight.SemiBold,
+                                        )
+                                        Spacer(Modifier.height(6.dp))
+                                    }
                                     Row(verticalAlignment = Alignment.Top) {
                                         if (directCoverUrl.isNotBlank()) {
                                             AsyncImage(
@@ -1195,28 +1301,30 @@ fun showParseDialog(context: android.content.Context) {
                                         Spacer(Modifier.height(8.dp))
                                     }
 
-                                    // ===== 图集预览（横滑缩略图） =====
-                                    if (r.imageList.isNotEmpty()) {
+                                    // ===== 混合内容：视频区块尾部的数量提示 + 独立下载按钮 =====
+                                    if (isMixed) {
+                                        Spacer(Modifier.height(4.dp))
+                                        Text(
+                                            text = localizedChatInputString(
+                                                R.string.parse_video_videos_detected,
+                                                qualityList.size.takeIf { it > 0 } ?: 1,
+                                            ),
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        )
                                         Spacer(Modifier.height(8.dp))
-                                        Row(
-                                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                            modifier = Modifier
-                                                .fillMaxWidth()
-                                                .horizontalScroll(rememberScrollState()),
+                                        OutlinedButton(
+                                            onClick = { doDownload(images = false) },
+                                            enabled = !downloading && !sending,
                                         ) {
-                                            r.imageList.forEachIndexed { index, imgUrl ->
-                                                Column {
-                                                    AsyncImage(
-                                                        model = imgUrl,
-                                                        contentDescription = "$index",
-                                                        modifier = Modifier
-                                                            .size(width = 96.dp, height = 128.dp)
-                                                            .clip(RoundedCornerShape(8.dp)),
-                                                        contentScale = ContentScale.Crop,
-                                                    )
-                                                }
-                                            }
+                                            Text(stringResource(R.string.parse_video_download_video_btn))
                                         }
+                                    }
+
+                                    // ===== 图集预览（纯图集结果保持原位展示；混合内容已上移为独立区块） =====
+                                    if (!isMixed && r.imageList.isNotEmpty()) {
+                                        Spacer(Modifier.height(8.dp))
+                                        GalleryThumbsRow(r.imageList)
                                         Spacer(Modifier.height(4.dp))
                                         Text(
                                             text = localizedChatInputString(R.string.parse_video_gallery_detected, r.imageList.size),
@@ -1286,7 +1394,8 @@ fun showParseDialog(context: android.content.Context) {
                     val hasVideo = data?.video_link?.isNotBlank() == true
                     if (r != null) {
                         Column(horizontalAlignment = Alignment.End) {
-                            if (hasVideo) {
+                            // 纯视频保持单下载按钮；有图集（含混合）改为「下载全部文件」一键取视频+图集
+                            if (hasVideo && r.imageList.isEmpty()) {
                                 Button(
                                     onClick = { doDownload(images = false) },
                                     enabled = !downloading && !sending,
@@ -1297,12 +1406,12 @@ fun showParseDialog(context: android.content.Context) {
                             if (r.imageList.isNotEmpty()) {
                                 Spacer(Modifier.height(4.dp))
                                 Button(
-                                    onClick = { doDownload(images = true) },
+                                    onClick = { doDownloadAll() },
                                     enabled = !downloading && !sending,
                                 ) {
                                     Text(
                                         if (downloading) stringResource(R.string.parse_video_downloading)
-                                        else stringResource(R.string.parse_video_download_images),
+                                        else stringResource(R.string.parse_video_download_all_files),
                                     )
                                 }
                             }

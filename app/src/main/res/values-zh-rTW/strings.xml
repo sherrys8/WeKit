@@ -4000,6 +4000,12 @@
     <string name="parse_video_music_download_failed">音樂擷取失敗</string>
     <string name="parse_video_download_images">下載全部圖片</string>
     <string name="parse_video_gallery_detected">偵測到圖集：%1$d 張圖片</string>
+    <string name="parse_video_videos_detected">偵測到影片：%1$d 個</string>
+    <string name="parse_video_section_gallery">圖集</string>
+    <string name="parse_video_section_video">影片</string>
+    <string name="parse_video_download_images_btn">下載圖片</string>
+    <string name="parse_video_download_video_btn">下載影片</string>
+    <string name="parse_video_download_all_files">下載全部檔案</string>
     <string name="parse_video_send_files">傳送檔案</string>
     <string name="parse_video_whitelist_conversations">生效會話</string>
     <string name="parse_video_whitelist_empty">未選擇，全部不生效（點擊選擇）</string>
