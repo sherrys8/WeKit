@@ -4023,6 +4023,7 @@
     <string name="parse_video_section_video">视频</string>
     <string name="parse_video_download_images_btn">下载图片</string>
     <string name="parse_video_download_video_btn">下载视频</string>
+    <string name="parse_video_download_all_videos_btn">下载全部视频</string>
     <string name="parse_video_download_all_files">下载全部文件</string>
     <string name="parse_video_send_files">发送文件</string>
     <string name="parse_video_whitelist_conversations">生效会话</string>

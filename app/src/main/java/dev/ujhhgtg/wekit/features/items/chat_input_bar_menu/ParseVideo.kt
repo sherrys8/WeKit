@@ -279,6 +279,8 @@ object ParseVideo : ClickableFeature() {
         val qualityList: List<Pair<String, String>> = emptyList(),
         /** 图集（图片列表，无视频时非空）。 */
         val imageList: List<String> = emptyList(),
+        /** 备用线路多视频直链：不供逐档选择，下载时全部取下（qualityList 此时即视频列表，与图集同思路）。 */
+        val downloadAllVideos: Boolean = false,
     ) {
         /** 把 data(JsonElement) 解析成 VideoData 对象，兼容 data 为字符串(错误信息)的情况 */
         fun parsedData(): VideoData? {
@@ -467,7 +469,7 @@ object ParseVideo : ClickableFeature() {
 
     /**
      * 备用线路：kit9 聚合解析。video_link 可能是 [{type:"video|image",url}] 混合数组：
-     * 视频条目全部保留为可切换档位（多直链=同一视频不同码率，取 br 参数标注档位名），
+     * 视频条目按 br 码率降序全部保留（>1 条时置 downloadAllVideos，下载时全选、不做档位选择），
      * 图片条目全部进图集列表（视频存在时不再丢弃，修复 mixed 内容只能下载首个视频的问题）。
      */
     private fun parseByBackup(link: String): Result<VideoParseResult> = runCatching {
@@ -518,6 +520,7 @@ object ParseVideo : ClickableFeature() {
                 data = json.parseToJsonElement(json.encodeToString(normalized)),
                 qualityList = qualityList,
                 imageList = galleryImages,
+                downloadAllVideos = sortedVideos.size > 1,
             )
         }
     }
@@ -904,6 +907,19 @@ fun showParseDialog(context: android.content.Context) {
                                 }
                                 if (files.isEmpty()) error("无图片下载成功")
                                 files
+                            } else if (r.downloadAllVideos && r.qualityList.size > 1) {
+                                // 备用线路多视频直链：全部下载（与图集同思路），无需逐档选择
+                                val files = mutableListOf<java.io.File>()
+                                r.qualityList.forEachIndexed { index, (_, vUrl) ->
+                                    val out = java.io.File(dir, "video-${UUID.randomUUID()}-$index.mp4")
+                                    downloadVideo(vUrl, out) { downloaded, total ->
+                                        if (total > 0 && downloaded > 0) {
+                                            downloadProgress = (downloaded.toFloat() / total).coerceIn(0f, 1f)
+                                        }
+                                    }.onSuccess { files += it }
+                                }
+                                if (files.isEmpty()) error("无视频下载成功")
+                                files
                             } else {
                                 val out = java.io.File(dir, "video-${UUID.randomUUID()}.mp4")
                                 downloadVideo(videoUrl, out) { downloaded, total ->
@@ -933,7 +949,7 @@ fun showParseDialog(context: android.content.Context) {
                 }
             }
 
-            /** 一键下载全部文件：当前选中清晰度视频 + 全部图集图片；部分失败不阻断其余。 */
+            /** 一键下载全部文件：全部视频直链（备用线路多选）或选中清晰度 + 全部图集图片；部分失败不阻断其余。 */
             fun doDownloadAll() {
                 val r = parseResult ?: return
                 val data = r.parsedData() ?: return
@@ -952,7 +968,12 @@ fun showParseDialog(context: android.content.Context) {
                                     downloadProgress = (downloaded.toFloat() / total).coerceIn(0f, 1f)
                                 }
                             }
-                            if (videoUrl.isNotBlank()) {
+                            if (r.downloadAllVideos && r.qualityList.size > 1) {
+                                r.qualityList.forEachIndexed { index, (_, vUrl) ->
+                                    val out = java.io.File(dir, "video-${UUID.randomUUID()}-$index.mp4")
+                                    downloadVideo(vUrl, out, onProg).onSuccess { files += it }
+                                }
+                            } else if (videoUrl.isNotBlank()) {
                                 val out = java.io.File(dir, "video-${UUID.randomUUID()}.mp4")
                                 downloadVideo(videoUrl, out, onProg).onSuccess { files += it }
                             }
@@ -1211,7 +1232,7 @@ fun showParseDialog(context: android.content.Context) {
                                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                                 )
                                             }
-                                            if (qualityList.size > 1) {
+                                            if (qualityList.size > 1 && !r.downloadAllVideos) {
                                                 Spacer(Modifier.height(8.dp))
                                                 var expanded by remember { mutableStateOf(false) }
                                                 val selectedLabel = qualityList
@@ -1317,7 +1338,12 @@ fun showParseDialog(context: android.content.Context) {
                                             onClick = { doDownload(images = false) },
                                             enabled = !downloading && !sending,
                                         ) {
-                                            Text(stringResource(R.string.parse_video_download_video_btn))
+                                            Text(
+                                                stringResource(
+                                                    if (r.downloadAllVideos) R.string.parse_video_download_all_videos_btn
+                                                    else R.string.parse_video_download_video_btn,
+                                                ),
+                                            )
                                         }
                                     }
 
@@ -1400,7 +1426,12 @@ fun showParseDialog(context: android.content.Context) {
                                     onClick = { doDownload(images = false) },
                                     enabled = !downloading && !sending,
                                 ) {
-                                    Text(stringResource(R.string.parse_video_download))
+                                    Text(
+                                        stringResource(
+                                            if (r.downloadAllVideos) R.string.parse_video_download_all_videos_btn
+                                            else R.string.parse_video_download,
+                                        ),
+                                    )
                                 }
                             }
                             if (r.imageList.isNotEmpty()) {

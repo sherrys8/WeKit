@@ -3995,6 +3995,7 @@
     <string name="parse_video_section_video">Video</string>
     <string name="parse_video_download_images_btn">Download images</string>
     <string name="parse_video_download_video_btn">Download video</string>
+    <string name="parse_video_download_all_videos_btn">Download all videos</string>
     <string name="parse_video_download_all_files">Download all files</string>
     <string name="parse_video_send_files">Send Files</string>
     <string name="parse_video_whitelist_conversations">Enabled conversations</string>
