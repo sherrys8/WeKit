@@ -71,7 +71,6 @@ import dev.ujhhgtg.wekit.ui.content.m3.BaseWidget
 import dev.ujhhgtg.wekit.ui.content.m3.SegmentedColumn
 import dev.ujhhgtg.wekit.ui.content.m3.SwitchWidget
 import dev.ujhhgtg.wekit.ui.utils.showComposeDialog
-import dev.ujhhgtg.wekit.utils.HostInfo
 import dev.ujhhgtg.wekit.utils.WeLogger
 import dev.ujhhgtg.wekit.utils.android.readTextFromClipboard
 import dev.ujhhgtg.wekit.utils.android.showToast
@@ -623,11 +622,9 @@ object ParseVideo : ClickableFeature() {
 
     // ==================== 群聊抖音链接自动解析回复 ====================
 
-    /** 临时发送用目录 */
-    private fun tempSendDir(context: android.content.Context): java.io.File {
-        val base = context.cacheDir ?: context.filesDir
-        return java.io.File(base, "parse_video_send")
-    }
+    /** 临时发送用目录：外部存储 Download/WeKit/ParseVideoTemp（不再落微信内部 cache，便于用户查看与清理） */
+    private fun tempSendDir(): java.io.File =
+        (KnownPaths.downloads / "ParseVideoTemp").toFile()
 
     private val autoReplyScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
@@ -677,14 +674,13 @@ object ParseVideo : ClickableFeature() {
 
     /** 真正执行解析 + 下载 + 发送。所有流程在地线程执行, 调用方已持锁。 */
     private suspend fun doAutoReply(talker: String, link: String) {
-        val context = HostInfo.application
         val result = runCatching {
             withContext(Dispatchers.IO) {
                 val parsed = parseVideo(link).getOrElse { throw it }
                 if (parsed.code != 200) {
                     error("parse failed: ${parsed.msg}")
                 }
-                sendParseResult(talker, parsed, tempSendDir(context))
+                sendParseResult(talker, parsed, tempSendDir())
             }
         }
         if (result.isFailure) {
@@ -816,7 +812,7 @@ fun showParseDialog(context: android.content.Context) {
                 scope.launch {
                     val sendResult = withContext(Dispatchers.IO) {
                         runCatching {
-                            val dir = java.io.File(appContext.cacheDir ?: appContext.filesDir, "parse_video_send")
+                            val dir = tempSendDir()
                             // 跟随弹窗中当前选中的清晰度档位（默认第一档/视频直链）
                             sendParseResult(
                                 talker,
