@@ -495,9 +495,14 @@ object ParseVideo : ClickableFeature() {
             val dataElement = result.data ?: return@runCatching result
             if (dataElement !is JsonObject) return@runCatching result
             val rawVideoLink = dataElement["video_link"]
-            // 字符串形态：单视频，不动；仅补 image 字段兜底的图集
+            // 字符串形态：单视频，不动；图集取 image 字段兜底，兜底也没有时用 video_cover 充作图集图，
+            // 使视频帖统一呈现「图集+视频」（封面不占封面位，与主线路 images 含封面的行为对齐）
             if (rawVideoLink !is JsonArray) {
-                return@runCatching result.copy(imageList = kit9FallbackImages(dataElement))
+                val hasVideo = (rawVideoLink as? JsonPrimitive)?.content?.startsWith("http") == true
+                val strCover = (dataElement["video_cover"] as? JsonPrimitive)?.content ?: ""
+                val strImages = kit9FallbackImages(dataElement)
+                    .ifEmpty { if (hasVideo && strCover.startsWith("http")) listOf(strCover) else emptyList() }
+                return@runCatching result.copy(imageList = strImages)
             }
             val entries = rawVideoLink.mapNotNull { entry ->
                 (entry as? JsonObject)?.let { obj ->
@@ -517,7 +522,10 @@ object ParseVideo : ClickableFeature() {
                     (kit9BitrateLabel(u)?.let { "备用 $it" } ?: "备用视频 ${index + 1}") to u
                 }
             } else emptyList()
-            val galleryImages = imageUrls.ifEmpty { kit9FallbackImages(dataElement) }
+            // 图集优先取 image 条目，其次 image 字段兜底；两者皆空时用 video_cover 充作图集图（与主线路视频帖同语义）
+            val galleryImages = imageUrls
+                .ifEmpty { kit9FallbackImages(dataElement) }
+                .ifEmpty { if (sortedVideos.isNotEmpty() && cover.startsWith("http")) listOf(cover) else emptyList() }
             val normalized = VideoData(
                 video_title = title,
                 video_cover = cover,
