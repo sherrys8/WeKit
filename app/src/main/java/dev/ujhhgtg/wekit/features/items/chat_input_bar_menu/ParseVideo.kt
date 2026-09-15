@@ -673,9 +673,10 @@ object ParseVideo : ClickableFeature() {
     }
 
     /**
-     * 下载并发送一条解析结果：有视频直链（优先取 videoUrlOverride，即弹窗中当前选中的清晰度）
-     * → 发视频；否则按 imageList 逐张发图片。
-     * 返回发送的媒体数量，全部失败抛异常。
+     * 下载并发送一条解析结果：视频与图集**全部**发送（自动回复与弹窗一键发送同语义，不考虑刷屏）。
+     * 备用线路多视频直链（downloadAllVideos）按码率降序逐条全发；其余线路最多一条视频
+     * （弹窗入口可传 videoUrlOverride 指定当前选中清晰度）；随后按 imageList 逐张发图片。
+     * 单个媒体失败仅记日志跳过，全部失败才抛异常；返回成功发送的媒体数量。
      */
     private fun sendParseResult(
         talker: String,
@@ -685,30 +686,36 @@ object ParseVideo : ClickableFeature() {
         onProgress: (downloaded: Long, total: Long) -> Unit = { _, _ -> },
     ): Int {
         val data = parsed.parsedData() ?: error("no video data")
-        val videoUrl = videoUrlOverride?.takeIf { it.isNotBlank() } ?: data.video_link
         dir.mkdirs()
         var sentCount = 0
-        if (videoUrl.isNotBlank()) {
-            val out = java.io.File(dir, "auto-${UUID.randomUUID()}.mp4")
-            downloadVideo(videoUrl, out, onProgress).getOrElse { throw it }
+        val videoUrls: List<String> =
+            if (parsed.downloadAllVideos && parsed.qualityList.size > 1) {
+                parsed.qualityList.map { it.second }
+            } else {
+                listOfNotNull(
+                    (videoUrlOverride?.takeIf { it.isNotBlank() } ?: data.video_link)
+                        .takeIf { it.isNotBlank() },
+                )
+            }
+        for ((index, vUrl) in videoUrls.withIndex()) {
+            val out = java.io.File(dir, "auto-${UUID.randomUUID()}-v$index.mp4")
+            downloadVideo(vUrl, out, onProgress).getOrElse { e ->
+                WeLogger.w(TAG, "video $index download failed: ${e.message}")
+                continue
+            }
             val sent = WeMessageApi.sendVideo(talker, out.absolutePath)
-            if (!sent) {
-                out.delete()
-                error("sendVideo failed")
-            }
-            sentCount = 1
-        } else {
-            for ((index, imgUrl) in parsed.imageList.withIndex()) {
-                val out = java.io.File(dir, "auto-${UUID.randomUUID()}-$index.jpg")
-                downloadVideo(imgUrl, out, onProgress).getOrElse { e ->
-                    WeLogger.w(TAG, "image $index download failed: ${e.message}")
-                    continue
-                }
-                val sent = WeMessageApi.sendImage(talker, out.absolutePath)
-                if (sent) sentCount++ else out.delete()
-            }
-            if (sentCount == 0) error("no media sent")
+            if (sent) sentCount++ else out.delete()
         }
+        for ((index, imgUrl) in parsed.imageList.withIndex()) {
+            val out = java.io.File(dir, "auto-${UUID.randomUUID()}-$index.jpg")
+            downloadVideo(imgUrl, out, onProgress).getOrElse { e ->
+                WeLogger.w(TAG, "image $index download failed: ${e.message}")
+                continue
+            }
+            val sent = WeMessageApi.sendImage(talker, out.absolutePath)
+            if (sent) sentCount++ else out.delete()
+        }
+        if (sentCount == 0) error("no media sent")
         return sentCount
     }
 
