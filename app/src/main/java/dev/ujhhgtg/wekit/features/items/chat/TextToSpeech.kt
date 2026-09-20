@@ -21,6 +21,7 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
+import androidx.activity.ComponentActivity
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -33,6 +34,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import com.composables.icons.materialsymbols.MaterialSymbols
 import com.composables.icons.materialsymbols.outlined.Graphic_eq
@@ -43,14 +45,17 @@ import dev.ujhhgtg.wekit.R
 import dev.ujhhgtg.wekit.features.api.core.WeMessageApi
 import dev.ujhhgtg.wekit.features.api.core.models.MessageInfo
 import dev.ujhhgtg.wekit.features.api.core.models.MessageType
+import dev.ujhhgtg.wekit.features.api.ui.WeChatInputBarMenuApi
 import dev.ujhhgtg.wekit.features.api.ui.WeChatMessageContextMenuApi
+import dev.ujhhgtg.wekit.features.api.ui.WeCurrentConversationApi
+import dev.ujhhgtg.wekit.features.core.ClickableFeature
 import dev.ujhhgtg.wekit.features.core.FeatureCategoryIds
-import dev.ujhhgtg.wekit.features.core.SwitchFeature
 import dev.ujhhgtg.wekit.preferences.WePrefs.Companion.prefOption
 import dev.ujhhgtg.wekit.ui.content.AlertDialogContent
 import dev.ujhhgtg.wekit.ui.content.m3.DropDownMenuWidget
 import dev.ujhhgtg.wekit.ui.content.m3.DropdownOption
 import dev.ujhhgtg.wekit.ui.content.m3.SegmentedColumn
+import dev.ujhhgtg.wekit.ui.content.m3.SwitchWidget
 import dev.ujhhgtg.wekit.ui.content.m3.TextFieldDialogWidget
 import dev.ujhhgtg.wekit.ui.utils.MicIcon
 import dev.ujhhgtg.wekit.ui.utils.showComposeDialog
@@ -65,7 +70,10 @@ import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
 
-object TextToSpeech : SwitchFeature(), WeChatMessageContextMenuApi.IMenuItemsProvider {
+object TextToSpeech :
+    ClickableFeature(),
+    WeChatMessageContextMenuApi.IMenuItemsProvider,
+    WeChatInputBarMenuApi.IActionItemsProvider {
 
     override val technicalId = "文字转语音"
     override val nameRes = R.string.feature_text_to_speech_name
@@ -78,6 +86,12 @@ object TextToSpeech : SwitchFeature(), WeChatMessageContextMenuApi.IMenuItemsPro
     var apiKey by prefOption("tts_api_key", "")
     var selectedVoice by prefOption("tts_voice_id", "琅琊榜-梅长苏")
     var selectedEmotion by prefOption("tts_emotion", "平静")
+
+    /** 入口一: 长按聊天消息气泡的菜单 */
+    private var entryBubble by prefOption("tts_entry_bubble", false)
+
+    /** 入口二: 长按输入栏加号/发送按钮弹出的菜单 */
+    private var entryInputBar by prefOption("tts_entry_input_bar", false)
 
     private val mh = Handler(Looper.getMainLooper())
     private var lastWavPath: String? = null
@@ -102,10 +116,12 @@ object TextToSpeech : SwitchFeature(), WeChatMessageContextMenuApi.IMenuItemsPro
 
     override fun onEnable() {
         WeChatMessageContextMenuApi.addProvider(this)
+        WeChatInputBarMenuApi.addProvider(this)
     }
 
     override fun onDisable() {
         WeChatMessageContextMenuApi.removeProvider(this)
+        WeChatInputBarMenuApi.removeProvider(this)
     }
 
     @Suppress("DEPRECATION")
@@ -115,6 +131,8 @@ object TextToSpeech : SwitchFeature(), WeChatMessageContextMenuApi.IMenuItemsPro
     private val micImageVector = MaterialSymbols.Outlined.Graphic_eq
 
     override fun getMenuItems(): List<WeChatMessageContextMenuApi.MenuItem> {
+        if (!entryBubble) return emptyList()
+
         return listOf(
             WeChatMessageContextMenuApi.MenuItem(
                 777025,
@@ -132,6 +150,63 @@ object TextToSpeech : SwitchFeature(), WeChatMessageContextMenuApi.IMenuItemsPro
                 }
             )
         )
+    }
+
+    override fun getActionItems(): List<WeChatInputBarMenuApi.ActionItem> {
+        if (!entryInputBar) return emptyList()
+
+        return listOf(
+            WeChatInputBarMenuApi.ActionItem(
+                id = "text_to_speech",
+                icon = micImageVector,
+                label = localizedChatString(R.string.chat_tts_menu),
+                onClick = { context, chatFooter ->
+                    showMainDialog(context, WeCurrentConversationApi.value, chatFooter.lastText.trim())
+                }
+            )
+        )
+    }
+
+    override fun onClick(context: ComponentActivity) {
+        showComposeDialog(context) {
+            var bubbleEntry by remember { mutableStateOf(entryBubble) }
+            var inputBarEntry by remember { mutableStateOf(entryInputBar) }
+
+            AlertDialogContent(
+                title = { Text(stringResource(R.string.feature_text_to_speech_name)) },
+                text = {
+                    SegmentedColumn(title = stringResource(R.string.tts_entry_group_title)) {
+                        item {
+                            SwitchWidget(
+                                iconPlaceholder = false,
+                                title = stringResource(R.string.tts_entry_bubble),
+                                description = stringResource(R.string.tts_entry_bubble_description),
+                                checked = bubbleEntry,
+                                onCheckedChange = {
+                                    bubbleEntry = it
+                                    entryBubble = it
+                                },
+                            )
+                        }
+                        item {
+                            SwitchWidget(
+                                iconPlaceholder = false,
+                                title = stringResource(R.string.tts_entry_input_bar),
+                                description = stringResource(R.string.tts_entry_input_bar_description),
+                                checked = inputBarEntry,
+                                onCheckedChange = {
+                                    inputBarEntry = it
+                                    entryInputBar = it
+                                },
+                            )
+                        }
+                    }
+                },
+                dismissButton = {
+                    TextButton(onDismiss) { Text(stringResource(R.string.dialog_close)) }
+                },
+            )
+        }
     }
 
     private fun showMainDialog(context: android.content.Context, talker: String, initialText: String) {
