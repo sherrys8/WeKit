@@ -108,13 +108,16 @@ object ParseVideo : ClickableFeature() {
 
     /** 主解析线路：dy.51web.eu.org（抖音多清晰度无水印，token=dyyy）。 */
     private const val PARSE_API_PRIMARY = "https://dy.51web.eu.org/api/parse"
+    private const val PARSE_API_PRIMARY_ORIGIN = "https://dy.51web.eu.org"
     private const val PARSE_API_PRIMARY_TOKEN = "dyyy"
 
     /** 备用解析线路：kit9 聚合解析（主线路失败时自动切换）。 */
     private const val PARSE_API = "https://apis.kit9.cn/api/aggregate_videos/api.php"
+    private const val PARSE_API_ORIGIN = "https://apis.kit9.cn"
 
     /** 小红书解析线路：dovis（识别到小红书链接时直接使用，不经前两条线路）。 */
     private const val PARSE_API_XHS = "http://api.dovis.work/api/xhs.php?url="
+    private const val PARSE_API_XHS_ORIGIN = "http://api.dovis.work"
     private const val DEFAULT_BUFFER_SIZE = 8192
 
     /** 线路选择（解析弹窗右上角可切换，持久化到偏好）。auto = 按默认优先级回退；其余固定走所选线路。 */
@@ -147,7 +150,7 @@ object ParseVideo : ClickableFeature() {
     private var parseRoute by prefOption("parse_video_route", ROUTE_AUTO)
 
     /** 主线路请求的 pid 参数（线路1~线路7 → 数字 1~7），手动弹窗与群聊自动回复共用。 */
-    private var parsePid by prefOption("parse_video_pid", 1)
+    private var parsePid by prefOption("parse_video_pid", 2)
 
     private fun defaultSaveDir(): String =
         (KnownPaths.downloads / "ParseVideo").absolutePathString()
@@ -395,6 +398,23 @@ object ParseVideo : ClickableFeature() {
         return builder.build()
     }
 
+    /**
+     * 解析接口请求：51web 对来源按请求头打分，OkHttp 默认 UA 得 0 分直接 403（响应仍是 HTTP 200，
+     * 封禁文案塞在 code=403 的 msg 里），补齐移动端浏览器的 Accept / Accept-Language / Referer /
+     * Sec-Fetch-* 后才会进入业务逻辑。Cookie 与 TLS 指纹实测不参与打分，无需处理。
+     */
+    private fun browserParseRequest(apiUrl: String, origin: String): Request = Request.Builder()
+        .url(apiUrl).get()
+        .header("User-Agent", webUserAgent)
+        .header("Accept", "application/json, text/plain, */*")
+        .header("Accept-Language", "zh-CN,zh;q=0.9")
+        .header("Referer", "$origin/")
+        .header("Origin", origin)
+        .header("Sec-Fetch-Dest", "empty")
+        .header("Sec-Fetch-Mode", "cors")
+        .header("Sec-Fetch-Site", "same-origin")
+        .build()
+
     private fun parseVideo(link: String): Result<VideoParseResult> = runCatching {
         // 小红书链接（xiaohongshu.com / xhslink 短链）固定走 dovis 小红书线路：
         // 前两条线路不支持小红书，逐级失败回退只会白等两轮超时
@@ -425,7 +445,7 @@ object ParseVideo : ClickableFeature() {
             "?token=" + java.net.URLEncoder.encode(PARSE_API_PRIMARY_TOKEN, "UTF-8") +
             "&pid=" + parsePid +
             "&url=" + java.net.URLEncoder.encode(link, "UTF-8")
-        val request = Request.Builder().url(url).get().build()
+        val request = browserParseRequest(url, PARSE_API_PRIMARY_ORIGIN)
         httpClient.newCall(request).execute().use { resp ->
             if (!resp.isSuccessful) error("主线路请求失败: HTTP ${resp.code}")
             val body = resp.body?.string() ?: error("主线路响应为空")
@@ -485,7 +505,7 @@ object ParseVideo : ClickableFeature() {
      */
     private fun parseByBackup(link: String): Result<VideoParseResult> = runCatching {
         val url = PARSE_API + "?link=" + java.net.URLEncoder.encode(link, "UTF-8")
-        val request = Request.Builder().url(url).get().build()
+        val request = browserParseRequest(url, PARSE_API_ORIGIN)
         httpClient.newCall(request).execute().use { resp ->
             if (!resp.isSuccessful) error("请求失败: HTTP ${resp.code}")
             val body = resp.body?.string() ?: error("响应为空")
@@ -547,10 +567,8 @@ object ParseVideo : ClickableFeature() {
     /** 小红书解析线路：dovis（http 接口，视频直链无水印；支持 xiaohongshu.com / xhslink 短链）。 */
     private fun parseByXhs(link: String): Result<VideoParseResult> = runCatching {
         val url = PARSE_API_XHS + java.net.URLEncoder.encode(link, "UTF-8")
-        // 必须携带浏览器 User-Agent：后端用请求方 UA 抓取小红书页面，默认 okhttp UA 会得到 502
-        val request = Request.Builder().url(url).get()
-            .header("User-Agent", webUserAgent)
-            .build()
+        // 后端用请求方 UA 抓取小红书页面，默认 okhttp UA 会得到 502
+        val request = browserParseRequest(url, PARSE_API_XHS_ORIGIN)
         httpClient.newCall(request).execute().use { resp ->
             if (!resp.isSuccessful) error("小红书线路请求失败: HTTP ${resp.code}")
             val body = resp.body?.string() ?: error("小红书线路响应为空")
