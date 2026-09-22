@@ -284,20 +284,23 @@ object TextToSpeech :
             var customVoices by remember { mutableStateOf(emptyList<TtsVoice>()) }
             var generating by remember { mutableStateOf(false) }
 
-            LaunchedEffect(Unit) {
+            LaunchedEffect(backendMode) {
+                // 魔方音色列表按后端重新拉取: 从豆包切回魔方时不能沿用旧快照
+                if (backendMode != BACKEND_MOFA) return@LaunchedEffect
                 Thread {
                     val fetched = fetchVoices()
                     val custom = fetchUserVoices()
                     mh.post {
+                        // 异步结果可能晚于用户再次切换到达, 只在仍处于魔方模式时回填
+                        if (backend != BACKEND_MOFA) return@post
                         voices = fetched
                         customVoices = custom
-                        if (backend != BACKEND_DOUBAO) {
-                            val inSystem = fetched.any { it.voiceId == voiceId }
-                            val inCustom = custom.any { it.voiceId == voiceId }
-                            if (!inSystem && !inCustom && fetched.isNotEmpty()) {
-                                voiceId = fetched.first().voiceId
-                                selectedVoice = voiceId
-                            }
+                        val inSystem = fetched.any { it.voiceId == voiceId }
+                        val inCustom = custom.any { it.voiceId == voiceId }
+                        // 当前所选不在魔方列表里 (含被豆包音色污染的残留值) 时归位
+                        if (!inSystem && !inCustom && fetched.isNotEmpty()) {
+                            voiceId = fetched.first().voiceId
+                            selectedVoice = voiceId
                         }
                     }
                 }.start()
@@ -402,12 +405,12 @@ object TextToSpeech :
                                         inputText.trim(),
                                         voiceId,
                                         EMOTIONS.first { it.first == emotion }.second,
-                                    ) { wavPath ->
+                                    ) { wavPath, err ->
                                         generating = false
                                         if (wavPath != null) {
                                             showPreviewDialog(context, talker, wavPath)
                                         } else {
-                                            showToast(context, "生成失败，请检查 API Key 与网络")
+                                            showToast(context, "生成失败：$err")
                                         }
                                     }
                                 },
@@ -637,9 +640,10 @@ object TextToSpeech :
         return "%d:%02d".format(totalSec / 60, totalSec % 60)
     }
 
-    private fun generateVoice(text: String, voiceId: String, emoVec: FloatArray, cb: (String?) -> Unit) {
+    private fun generateVoice(text: String, voiceId: String, emoVec: FloatArray, cb: (String?, String) -> Unit) {
         Thread {
             var wavPath: String? = null
+            var error = ""
             try {
                 val body = JSONObject().apply {
                     put("voiceId", voiceId)
@@ -647,23 +651,32 @@ object TextToSpeech :
                     put("emoVec", JSONArray(emoVec.map { it.toDouble() }))
                 }.toString()
                 val resp = httpPostJson("$API_BASE/api/open/v1/tts/simple-generate", body)
-                if (resp.isNotEmpty()) {
+                if (resp.isEmpty()) {
+                    error = "接口无响应 (HTTP 非 200 或网络异常)"
+                } else {
                     val root = JSONObject(resp)
                     val audioUrl = root.optJSONObject("data")?.optString("audio").orEmpty()
-                    if (audioUrl.isNotEmpty()) {
+                    if (audioUrl.isEmpty()) {
+                        val msg = root.optString("msg").ifEmpty { root.optString("message") }
+                        error = "code=${root.opt("code")} ${msg.ifEmpty { "未返回音频地址" }}"
+                    } else {
                         val dir = File(HostInfo.application.cacheDir, "wekit_tts").apply { mkdirs() }
                         val dest = File(dir, "tts_${System.currentTimeMillis()}.wav")
                         if (download(audioUrl, dest)) {
                             wavPath = dest.absolutePath
                             lastWavPath = wavPath
+                        } else {
+                            error = "音频下载失败"
                         }
                     }
                 }
             } catch (e: Exception) {
-                WeLogger.w(TAG, "generate voice failed: ${e.message}")
+                error = e.message ?: "exception"
+                WeLogger.w(TAG, "generate voice failed: $error")
             }
             val result = wavPath
-            mh.post { cb(result) }
+            val reason = error
+            mh.post { cb(result, reason) }
         }.start()
     }
 
