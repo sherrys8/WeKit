@@ -75,7 +75,6 @@ import org.json.JSONObject
 import kotlinx.coroutines.delay
 import java.io.ByteArrayOutputStream
 import java.io.File
-import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URL
 import java.util.UUID
@@ -718,7 +717,7 @@ object TextToSpeech :
                     closed.countDown()
                 }
 
-                override fun onFailure(webSocket: WebSocket, t: IOException, response: Response?) {
+                override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
                     error = t.message ?: "websocket failure"
                     closed.countDown()
                 }
