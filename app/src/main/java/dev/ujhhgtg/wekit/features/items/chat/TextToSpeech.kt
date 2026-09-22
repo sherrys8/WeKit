@@ -4,6 +4,7 @@ import android.media.MediaPlayer
 import android.os.Handler
 import android.os.Looper
 import android.view.View
+import androidx.activity.ComponentActivity
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -21,7 +22,6 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
-import androidx.activity.ComponentActivity
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -37,6 +37,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import com.composables.icons.materialsymbols.MaterialSymbols
+import com.composables.icons.materialsymbols.outlined.Compare_arrows
 import com.composables.icons.materialsymbols.outlined.Graphic_eq
 import com.composables.icons.materialsymbols.outlined.Pause
 import com.composables.icons.materialsymbols.outlined.Play_arrow
@@ -63,12 +64,24 @@ import dev.ujhhgtg.wekit.utils.AudioUtils
 import dev.ujhhgtg.wekit.utils.HostInfo
 import dev.ujhhgtg.wekit.utils.WeLogger
 import dev.ujhhgtg.wekit.utils.android.showToast
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.Response
+import okhttp3.WebSocket
+import okhttp3.WebSocketListener
+import okio.ByteString
 import org.json.JSONArray
 import org.json.JSONObject
 import kotlinx.coroutines.delay
+import java.io.ByteArrayOutputStream
 import java.io.File
+import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URL
+import java.util.UUID
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import kotlin.random.Random
 
 object TextToSpeech :
     ClickableFeature(),
@@ -83,9 +96,29 @@ object TextToSpeech :
     private const val TAG = "TextToSpeech"
     private const val API_BASE = "https://peiyinmofang.com"
 
+    private const val BACKEND_MOFA = 0
+    private const val BACKEND_DOUBAO = 1
+
+    // 豆包网页端逆向协议: 鉴权在 WebSocket 握手阶段完成, 依赖登录态 Cookie
+    private const val DOUBAO_WS = "wss://ws-samantha.doubao.com/samantha/audio/tts"
+    private const val DOUBAO_ORIGIN = "https://www.doubao.com"
+    private const val DOUBAO_UA =
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    private const val DOUBAO_AID = 497858
+    private const val DOUBAO_VERSION_CODE = 20800
+    private const val DOUBAO_PC_VERSION = "2.46.3"
+
+    /** 服务端不保证主动关闭连接, 静默这么久即视为合成结束 */
+    private const val DOUBAO_IDLE_GAP_MS = 2500L
+    private const val DOUBAO_MAX_WAIT_MS = 30000L
+
     var apiKey by prefOption("tts_api_key", "")
     var selectedVoice by prefOption("tts_voice_id", "琅琊榜-梅长苏")
     var selectedEmotion by prefOption("tts_emotion", "平静")
+
+    private var backend by prefOption("tts_backend", BACKEND_MOFA)
+    private var doubaoCookie by prefOption("tts_doubao_cookie", "")
+    private var doubaoSpeaker by prefOption("tts_doubao_speaker", "zh_female_taozi_conversation_v4_wvae_bigtts")
 
     /** 入口一: 长按聊天消息气泡的菜单 */
     private var entryBubble by prefOption("tts_entry_bubble", false)
@@ -103,6 +136,28 @@ object TextToSpeech :
         TtsVoice("琅琊榜-靖王", "琅琊榜-靖王"),
         TtsVoice("甄嬛传-甄嬛", "甄嬛传-甄嬛"),
     )
+
+    data class DoubaoVoice(val id: String, val label: String)
+
+    private val DOUBAO_VOICES = listOf(
+        DoubaoVoice("zh_female_taozi_conversation_v4_wvae_bigtts", "桃子 · 女声对话"),
+        DoubaoVoice("zh_female_shuangkuai_emo_v3_wvae_bigtts", "爽快 · 女声"),
+        DoubaoVoice("zh_female_tianmei_conversation_v4_wvae_bigtts", "甜美 · 女声"),
+        DoubaoVoice("zh_female_qingche_moon_bigtts", "清澈 · 女声"),
+        DoubaoVoice("zh_male_yangguang_conversation_v4_wvae_bigtts", "阳光 · 男声"),
+        DoubaoVoice("zh_male_chenwen_moon_bigtts", "沉稳 · 男声"),
+        DoubaoVoice("zh_male_rap_mars_bigtts", "说唱 · 男声"),
+        DoubaoVoice("en_female_sarah_conversation_bigtts", "Sarah · 英文女声"),
+        DoubaoVoice("en_male_adam_conversation_bigtts", "Adam · 英文男声"),
+    )
+
+    private val doubaoClient by lazy {
+        OkHttpClient.Builder()
+            .connectTimeout(15, TimeUnit.SECONDS)
+            .readTimeout(0, TimeUnit.SECONDS)
+            .pingInterval(10, TimeUnit.SECONDS)
+            .build()
+    }
 
     private val EMOTIONS = listOf(
         "平静" to floatArrayOf(0f, 0f, 0f, 0f, 0f, 0f, 0f, 0f),
@@ -212,7 +267,9 @@ object TextToSpeech :
     private fun showMainDialog(context: android.content.Context, talker: String, initialText: String) {
         showComposeDialog(context) {
             var inputText by remember { mutableStateOf(initialText) }
-            var voiceId by remember { mutableStateOf(selectedVoice) }
+            var backendMode by remember { mutableIntStateOf(backend) }
+            val isDoubao = backendMode == BACKEND_DOUBAO
+            var voiceId by remember { mutableStateOf(if (isDoubao) doubaoSpeaker else selectedVoice) }
             var emotion by remember {
                 mutableStateOf(
                     selectedEmotion.takeIf { e -> EMOTIONS.any { it.first == e } }
@@ -235,11 +292,13 @@ object TextToSpeech :
                     mh.post {
                         voices = fetched
                         customVoices = custom
-                        val inSystem = fetched.any { it.voiceId == voiceId }
-                        val inCustom = custom.any { it.voiceId == voiceId }
-                        if (!inSystem && !inCustom && fetched.isNotEmpty()) {
-                            voiceId = fetched.first().voiceId
-                            selectedVoice = voiceId
+                        if (backend != BACKEND_DOUBAO) {
+                            val inSystem = fetched.any { it.voiceId == voiceId }
+                            val inCustom = custom.any { it.voiceId == voiceId }
+                            if (!inSystem && !inCustom && fetched.isNotEmpty()) {
+                                voiceId = fetched.first().voiceId
+                                selectedVoice = voiceId
+                            }
                         }
                     }
                 }.start()
@@ -263,11 +322,18 @@ object TextToSpeech :
                         Row(Modifier.fillMaxWidth()) {
                             DropDownMenuWidget(
                                 modifier = Modifier.weight(1f),
-                                title = "系统音色",
+                                title = if (isDoubao) "豆包音色" else "系统音色",
                                 description = null,
                                 value = voiceId,
-                                options = voices.map { DropdownOption(it.voiceId, it.label) },
-                                onValueChange = { voiceId = it; selectedVoice = it },
+                                options = if (isDoubao) {
+                                    DOUBAO_VOICES.map { DropdownOption(it.id, it.label) }
+                                } else {
+                                    voices.map { DropdownOption(it.voiceId, it.label) }
+                                },
+                                onValueChange = {
+                                    voiceId = it
+                                    if (isDoubao) doubaoSpeaker = it else selectedVoice = it
+                                },
                                 maxVisibleItems = 6,
                             )
                             Spacer(Modifier.width(8.dp))
@@ -276,9 +342,10 @@ object TextToSpeech :
                                 title = "自定义音色",
                                 description = null,
                                 value = voiceId,
-                                options = customVoices.map { DropdownOption(it.voiceId, it.label) },
+                                options = if (isDoubao) emptyList()
+                                    else customVoices.map { DropdownOption(it.voiceId, it.label) },
                                 onValueChange = { voiceId = it; selectedVoice = it },
-                                enabled = customVoices.isNotEmpty(),
+                                enabled = !isDoubao && customVoices.isNotEmpty(),
                                 maxVisibleItems = 6,
                             )
                         }
@@ -287,10 +354,12 @@ object TextToSpeech :
 
                         DropDownMenuWidget(
                             title = "语气",
-                            description = null,
+                            description = if (isDoubao) emotion else null,
                             value = emotion,
-                            options = EMOTIONS.map { DropdownOption(it.first, it.first) },
+                            options = if (isDoubao) emptyList()
+                                else EMOTIONS.map { DropdownOption(it.first, it.first) },
                             onValueChange = { emotion = it; selectedEmotion = it },
+                            enabled = !isDoubao,
                         )
 
                         Spacer(Modifier.height(12.dp))
@@ -307,9 +376,26 @@ object TextToSpeech :
                                         showToast(context, "请输入文本")
                                         return@Button
                                     }
+                                    if (isDoubao) {
+                                        if (doubaoCookie.isBlank()) {
+                                            showToast(context, "请先在设置中填写豆包 Cookie")
+                                            showSettingsDialog(context)
+                                            return@Button
+                                        }
+                                        generating = true
+                                        generateVoiceDoubao(inputText.trim(), voiceId) { path, err ->
+                                            generating = false
+                                            if (path != null) {
+                                                showPreviewDialog(context, talker, path)
+                                            } else {
+                                                showToast(context, "生成失败：$err")
+                                            }
+                                        }
+                                        return@Button
+                                    }
                                     if (apiKey.isBlank()) {
                                         showToast(context, "请先在设置中填写 API Key")
-                                        showApiKeyDialog(context)
+                                        showSettingsDialog(context)
                                         return@Button
                                     }
                                     generating = true
@@ -357,19 +443,42 @@ object TextToSpeech :
 
                         Row(
                             Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.End,
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically,
                         ) {
-                            TextButton(onClick = { showApiKeyDialog(context) }) {
+                            TextButton(onClick = {
+                                if (backendMode == BACKEND_MOFA) {
+                                    selectedVoice = voiceId
+                                    backendMode = BACKEND_DOUBAO
+                                    voiceId = doubaoSpeaker
+                                } else {
+                                    doubaoSpeaker = voiceId
+                                    backendMode = BACKEND_MOFA
+                                    voiceId = selectedVoice
+                                }
+                                backend = backendMode
+                            }) {
                                 Icon(
-                                    MaterialSymbols.Outlined.Settings,
-                                    contentDescription = "设置",
+                                    MaterialSymbols.Outlined.Compare_arrows,
+                                    contentDescription = "切换后端",
                                     modifier = Modifier.size(18.dp),
                                 )
                                 Spacer(Modifier.width(4.dp))
-                                Text("打开设置")
+                                Text(if (backendMode == BACKEND_MOFA) "魔方" else "豆包")
                             }
-                            TextButton(onClick = { onDismiss() }) {
-                                Text("关闭")
+                            Row {
+                                TextButton(onClick = { showSettingsDialog(context) }) {
+                                    Icon(
+                                        MaterialSymbols.Outlined.Settings,
+                                        contentDescription = "设置",
+                                        modifier = Modifier.size(18.dp),
+                                    )
+                                    Spacer(Modifier.width(4.dp))
+                                    Text("打开设置")
+                                }
+                                TextButton(onClick = { onDismiss() }) {
+                                    Text("关闭")
+                                }
                             }
                         }
                     }
@@ -378,11 +487,12 @@ object TextToSpeech :
         }
     }
 
-    private fun showApiKeyDialog(context: android.content.Context) {
+    private fun showSettingsDialog(context: android.content.Context) {
         showComposeDialog(context) {
             var apiKeyState by remember { mutableStateOf(apiKey) }
+            var cookieState by remember { mutableStateOf(doubaoCookie) }
             AlertDialogContent(
-                title = { Text("API Key 设置") },
+                title = { Text("文字转语音设置") },
                 text = {
                     Column {
                         SegmentedColumn(title = "配音魔方") {
@@ -404,6 +514,28 @@ object TextToSpeech :
                         }
                         Text(
                             "用于调用配音魔方 TTS 接口，在官网「API Key 管理」中创建",
+                            style = MaterialTheme.typography.bodySmall,
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                        SegmentedColumn(title = "豆包") {
+                            item {
+                                TextFieldDialogWidget(
+                                    title = "Cookie",
+                                    value = cookieState,
+                                    onValueChange = {
+                                        cookieState = it
+                                        doubaoCookie = it
+                                    },
+                                    dialogTitle = "设置豆包 Cookie",
+                                    confirmLabel = "确认",
+                                    dismissLabel = "取消",
+                                    valueHint = "未设置，需包含 sessionid / sid_guard / uid_tt",
+                                    password = true,
+                                )
+                            }
+                        }
+                        Text(
+                            "在已登录的 doubao.com 开发者工具 (Application → Cookies) 中复制三个字段, 形如 sessionid=…; sid_guard=…; uid_tt=…, 有效期约 30 天",
                             style = MaterialTheme.typography.bodySmall,
                             modifier = Modifier.fillMaxWidth(),
                         )
@@ -533,6 +665,97 @@ object TextToSpeech :
             }
             val result = wavPath
             mh.post { cb(result) }
+        }.start()
+    }
+
+    private fun doubaoWsUrl(speaker: String): String {
+        // 伪装成一次全新的网页会话: 三个身份字段每次随机
+        val dev = (7_400_000_000_000_000_000L + Random.nextLong(999_999_999_999_999_999L)).toString()
+        return "$DOUBAO_WS?speaker=$speaker&format=aac&speech_rate=0&pitch=0" +
+            "&version_code=$DOUBAO_VERSION_CODE&language=zh&device_platform=web" +
+            "&aid=$DOUBAO_AID&real_aid=$DOUBAO_AID&pkg_type=release_version" +
+            "&device_id=$dev&pc_version=$DOUBAO_PC_VERSION&web_id=$dev&tea_uuid=$dev" +
+            "&region=&sys_region=&samantha_web=1&use-olympus-account=1&web_tab_id=${UUID.randomUUID()}"
+    }
+
+    private fun generateVoiceDoubao(text: String, speaker: String, cb: (String?, String) -> Unit) {
+        Thread {
+            val audio = ByteArrayOutputStream()
+            val closed = CountDownLatch(1)
+            var error = ""
+
+            val request = Request.Builder()
+                .url(doubaoWsUrl(speaker))
+                .header("Origin", DOUBAO_ORIGIN)
+                .header("User-Agent", DOUBAO_UA)
+                .header("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
+                .header("Cache-Control", "no-cache")
+                .header("Pragma", "no-cache")
+                .header("Cookie", doubaoCookie)
+                .build()
+
+            val ws = doubaoClient.newWebSocket(request, object : WebSocketListener() {
+                override fun onOpen(webSocket: WebSocket, response: Response) {
+                    webSocket.send(JSONObject().put("event", "text").put("text", text).toString())
+                    webSocket.send(JSONObject().put("event", "finish").toString())
+                }
+
+                override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
+                    synchronized(audio) { audio.write(bytes.toByteArray()) }
+                }
+
+                override fun onMessage(webSocket: WebSocket, raw: String) {
+                    val obj = runCatching { JSONObject(raw) }.getOrNull() ?: return
+                    val code = obj.optInt("code", 0)
+                    if (code != 0) {
+                        error = "code=$code ${obj.optString("message")}"
+                        webSocket.cancel()
+                        closed.countDown()
+                    }
+                }
+
+                override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
+                    closed.countDown()
+                }
+
+                override fun onFailure(webSocket: WebSocket, t: IOException, response: Response?) {
+                    error = t.message ?: "websocket failure"
+                    closed.countDown()
+                }
+            })
+
+            // 服务端不保证主动关闭连接, 因此以「不再收到数据」作为结束信号
+            val deadline = System.currentTimeMillis() + DOUBAO_MAX_WAIT_MS
+            var received = 0
+            var lastGrowth = System.currentTimeMillis()
+            while (System.currentTimeMillis() < deadline) {
+                if (closed.await(500, TimeUnit.MILLISECONDS)) break
+                val size = synchronized(audio) { audio.size() }
+                if (size != received) {
+                    received = size
+                    lastGrowth = System.currentTimeMillis()
+                } else if (size > 0 && System.currentTimeMillis() - lastGrowth > DOUBAO_IDLE_GAP_MS) {
+                    break
+                }
+            }
+            ws.cancel()
+
+            val bytes = synchronized(audio) { audio.toByteArray() }
+            var path: String? = null
+            if (bytes.isEmpty()) {
+                if (error.isEmpty()) error = "未收到音频数据"
+            } else {
+                val dir = File(HostInfo.application.cacheDir, "wekit_tts").apply { mkdirs() }
+                val dest = File(dir, "doubao_${System.currentTimeMillis()}.aac")
+                dest.writeBytes(bytes)
+                path = dest.absolutePath
+                lastWavPath = path
+            }
+            if (error.isNotEmpty()) WeLogger.w(TAG, "doubao tts failed: $error")
+
+            val result = path
+            val reason = error
+            mh.post { cb(result, reason) }
         }.start()
     }
 
