@@ -319,9 +319,14 @@ Prefer these over raw Compose controls:
 - 群聊分析后续迭代：① 深度图表 7 个模块默认折叠（`GroupStatsCharts` 各 collapsed 初始 true）；② `extractWords` 词云清洗（剥 XML 标签 `<[^>]*>` 与 HTML 实体、token 只保留 `isLetterOrDigit`、停用词补 `amp/lt/gt/xml/msg/appid/version` 等，修复词云出现 `0&lt`/`version=`/`/>` 等 XML 碎片）；③ API 配置弹窗改为动态行式（`AiSettingsDialog` 用 `SegmentedColumn` 单组 + 4 个 `TextFieldDialogWidget`，点行弹编辑框确认即保存，无保存按钮）；④ 模型容量改为弹窗 `ModelCapacitySamplingDialog`（右上 Tune 打开，「模型上下文容量」5 档分段选择 128K~2M + 「提取消息数量上限」滑块 0~1000 最左=自动，取消/保存）；`ModelCapacity` 枚举加 `M2(2M)` 档；新增 `AiModelConfig.extractLimit` 偏好（0=自动）；`aiGenerateReport` recentLines 由固定 30 条改为：extractLimit>0 取最近 N 条，自动时默认主题取最近 3000 条/自定义主题按 token×1.5 字符预算；三语言新增 `ui_group_capacity_sampling_*`/`ui_group_extract_limit*`/`ui_group_extract_auto` 字符串
 - 群聊分析后续迭代（二）：① 删除词云/高频词功能（`extractWords`/`commonStopWords`/`WordCloud`/`GroupStats.words`/`renderStatsReport` 高频词行/`ui_group_stat_words_title` 三语言全删），深度图表 7 模块 → 6 模块；② 提取消息默认值 1000 条（原 3000）、滑块上限 3000（原 1000）；③ 智能摘要卡片与 6 个深度图表卡的展开/折叠改用 `AnimatedVisibility` 过渡动画（`expandVertically`/`shrinkVertically` 默认 clip 裁剪，替代早前重叠方案）+ `fillMaxWidth`；④ 删除 `renderStatsReport` 末尾 Hchat 签名行
 - 群聊分析后续迭代（三）：① 折叠动画重叠修复——`expandVertically`/`shrinkVertically` 在 `verticalScroll` 容器内高度测量异常（无限高度约束），改外层卡片 `animateContentSize(tween(220))` 平滑高度 + 内容纯 `fadeIn`/`fadeOut`（不改变布局尺寸），动画保留且不重叠；② 布局切换新设计稿（标题「智能洞察」单行去日期、主卡片浅绿底+渐变描边、时段条浅灰容器+选中白色胶囊、结果空态占位卡）——随后按用户要求恢复标题区「分析报告+日期副标题」与主卡片原色（surfaceVariant + primary 35% 描边），仅保留时段条容器样式与结果空态占位卡；③ 新增 `ui_group_result_placeholder` 三语言（空态占位文案）
+- 文字转语音（A 套 `TextToSpeech`）入口拆分：`SwitchFeature` → `ClickableFeature`，新增两个独立入口开关偏好 `tts_entry_bubble`（长按消息气泡菜单）/`tts_entry_input_bar`（长按加号或发送按钮菜单），默认全部 `false`；`getMenuItems()`/`getActionItems()` 在 provider 内直接读偏好，故功能设置弹窗（`onClick` → `SegmentedColumn` + 两行 `SwitchWidget`）拨动即刻生效、无需重启微信；三语言新增 `tts_entry_group_title`/`tts_entry_bubble(+_description)`/`tts_entry_input_bar(+_description)` 5 条，`feature_text_to_speech_description` 改写为双入口说明
+- 文字转语音接入豆包后端：新增 `tts_backend`（0=配音魔方 / 1=豆包，默认魔方）+ `tts_doubao_cookie` + `tts_doubao_speaker`（与魔方 `tts_voice_id` 分开持久化，来回切后端各自记住所选）；主弹窗左下角新增 `Compare_arrows` 切换按钮显示当前后端名、点按即切。弹窗布局不随后端变化，只换数据——「系统音色」在豆包下标题改「豆包音色」并填 `DOUBAO_VOICES`（9 个内置 speaker id 常量表），「自定义音色」与「语气」两行在豆包下 `enabled = false` + 空 options（语气用 `description = if (isDoubao) emotion else null` 保持灰显当前值，因为 `DropDownMenuWidget` 的显示规则是 `description ?: selected?.label ?: "未选择"`）。`generateVoiceDoubao()` 用 OkHttp WebSocket 连 `wss://ws-samantha.doubao.com/samantha/audio/tts`：query 拼 `speaker`/`format=aac`/`speech_rate`/`pitch` + `aid=real_aid=497858`、`version_code=20800`、`pc_version=2.46.3` 等网页端指纹，`device_id`/`web_id`/`tea_uuid` 每次随机 19 位、`web_tab_id` 用 uuid4；握手头带 `Origin: https://www.doubao.com` + Chrome UA + `Cookie`；`onOpen` 发 `{"event":"text"}` 与 `{"event":"finish"}`，二进制帧即 ADTS AAC，落 `cacheDir/wekit_tts/doubao_*.aac` 后复用 `AudioUtils.anyToSilk` → `WeMessageApi.sendVoice`。设置弹窗 `showApiKeyDialog` 改名 `showSettingsDialog`，新增「豆包」组 Cookie 密码行
+- 豆包协议要点（参考实现见 Critical Context）：鉴权只在 WebSocket 握手期完成，9 个音色全部需要 `sessionid`+`sid_guard`+`uid_tt`（约 30 天）；结束判定不能照抄参考实现的 30 秒 `recv` 超时，改为「连续 2.5 秒无新增字节」或 `onClosing`/`code != 0` 收尾、30 秒兜底上限
+- CI 修复 `8fc0e276`：OkHttp **5.5.0** 的 `WebSocketListener.onFailure` 形参是 `Throwable` 而非 `IOException`，按后者覆写会报 `'onFailure' overrides nothing` 并使 `:app:compileStandardReleaseKotlin` 直接失败；`okio.ByteString`（`onMessage` 二进制重载）解析正常，属全仓首次引入 okio
+- 魔方/豆包切换冲突修复 `1d2f285a`：原 `LaunchedEffect(Unit)` 只在弹窗打开时取一次魔方音色，从豆包切回魔方时列表只剩 `DEFAULT_VOICES` 三条、`customVoices` 为空导致该行不可选，且残留的豆包 speaker id 会被魔方接口拒绝，而提示是写死的「请检查 API Key 与网络」；改为 `LaunchedEffect(backendMode)` 且仅魔方模式请求，回填前用 `backend` 偏好做竞态二次校验（`return@post`），所选不在魔方列表内时归位到首个音色；`generateVoice` 回调扩为 `(String?, String)`，把 HTTP 状态与服务端 `code`/`msg` 带进 toast
 
 ### In Progress
-- (none)
+- 豆包后端与魔方切换的真机验证矩阵：豆包生成 → 切回魔方确认音色列表恢复且可生成 → 再切回豆包；魔方若仍失败，需回读 toast 中的 `code=`/`msg` 才能定位是 Key、额度还是音色名问题。CI 侧 `build`/`build_zygisk`/`upload-telegram` 均绿，仅 `dex-test` 的 `Enforce Dex resolution result` 为分支既有失败（1 个 `UNEXPECTED_FAILURE` + 3 个 `BLOCKED`），本轮未改任何 Dex 声明，按约定不追
 
 ## Key Decisions
 - 设置页使用弹窗（`showComposeDialog`）而非独立 Activity
@@ -330,12 +335,22 @@ Prefer these over raw Compose controls:
 - 网易云音乐改用 `ffapi.cn` 单接口，搜索 `?msg=&limit=20` → `data[{n, title, singer, pic}]`，选歌 `?msg=&n=index` → `data{id, name, singer, pic, url, lrc}`，歌词 `?act=lrcgc&id=ID` 返回 LRC 纯文本，播放 URL 直接传给 `MediaPlayer.setDataSource()`
 - 汽水音乐改用 `api.cxzja.cn`，需要 Token 认证，搜索 `?token=&msg=&n=` → `data[{num, identifier, song_name, singers, album_cover}]`，详情 `?token=&msg=&n=num` → `data{download_url, lyric, ...}`
 - 三卡默认关闭，减少初始干扰
+- 豆包只作为 A 套 `TextToSpeech` 的可切换后端，不并入 B 套语音面板的 `TtsMode`（系统 TTS / Edge TTS / 克隆语音）
+- 豆包切换保持弹窗布局完全不变，只换数据来源；语气与自定义音色在豆包模式下禁用而非隐藏（用户明确要求不换布局）
+- 文字转语音两个菜单入口默认关闭，由用户在功能设置弹窗中自行开启（老用户升级后气泡菜单会先消失，属预期）
+- A 套弹窗新增文案沿用硬编码中文，本轮不做三语言资源化（用户选择「只新增本次需要的字符串」）
 
 ## Next Steps
 1. 群聊分析 ComponentActivity 全屏切换已提交，待 CI 构建验证（本地不构建，CI 负责编译）；真机验证长按菜单 → 全屏界面、状态栏着色、键盘弹起（ADJUST_RESIZE）
+2. 文字转语音豆包后端：`1d2f285a` 已推送且 `build` 绿，待真机跑完「豆包 → 魔方 → 豆包」往返验证（音色列表、自定义音色、生成结果）；若魔方 toast 带出 `code=`，据此决定是否补错误分型
+3. 豆包未做客户端节流：约 6 次快请求即触发 `710022002` block，如实际使用中频繁撞墙，再补最小间隔与冷却提示
 
 ## Critical Context
-- 远端 `origin/dev-sherry` 最新 commit：`b34503d7`
+- 远端 `origin/dev-sherry` 最新 commit：`1d2f285a`
+- 豆包 TTS 参考实现在仓库根的 `doubao-tts/`：它是**未被本仓库跟踪的嵌套浅克隆**（自带 `.git`，源 `https://github.com/sherrys7/doubao-tts`，仅 1 个 commit），`git add -A` 只会写入 gitlink 而不会收进文件内容；其中 `_decode.py`/`_serve.py`/`doubao-voice-audition.js` 连内层仓库也未跟踪（本地自写的试听面板与 ADTS 帧校验工具）。实测约束：跨域 `Origin` 会被握手层直接拒（close 1006，症状酷似风控，但原生客户端自设 `Origin` 头不受此限）；约 6 次快速请求触发服务端 `710022002` block；`speech_rate` 量纲未验证，故 WeKit 侧固定传 0；README 自述为逆向工程、仅供学习研究，失效时先看 Cookie 是否过期（约 30 天）
+- 豆包 Cookie 是等价于账号登录态的凭据（`sessionid`/`sid_guard`/`uid_tt`），存于 `WePrefs` 的 MMKV 明文偏好中，无 cryptKey；设置项以 password 模式输入，日志不打印其内容
+- 本仓库提交身份是**仓库级**覆盖：`sherrys8 <323482072+sherrys8@users.noreply.github.com>`（全局 `~/.gitconfig` 是 `sherrys7`/`sherrys7@qq.com`）；推送凭据为 Git Credential Manager（`credential.helper=manager`）+ 已登录 sherrys8 的 `gh` CLI，远端走 HTTPS。另一克隆 `D:\1\ZcodeData\dev-sherry\repo` 配的是 sherrys7 + 公司域名邮箱，公开历史中已出现上百次，未做处理，提交前先看 `git config user.email`
+- 本分支 `dex-test` job 的 `Enforce Dex resolution result` 长期失败（1 个 `UNEXPECTED_FAILURE` + 3 个 `BLOCKED`），`build`/`build_zygisk`/`upload-telegram` 正常；纯逻辑改动撞到这个红叉不必追
 - 网易云 API：`FFAPI = "https://ffapi.cn/int/v1/dg_netease"`
   - 搜索 `GET ?msg={keyword}&limit=20&format=json` → `data[{n, title, singer, pic}]`
   - 选歌 `GET ?msg={keyword}&n={index}&format=json` → `data{id, name, singer, pic, url, lrc}`
@@ -361,5 +376,6 @@ Prefer these over raw Compose controls:
 - `.../home_page_cards/HpcImageCard.kt`: 图片卡，支持自定义背景图
 - `.../chat/GroupChatSummary.kt`: 群聊智能分析，全屏界面（`fullScreen` 弹窗）+ 流式报告（`onDelta`）+ 底部 2x2 操作区；`generateReport`/`aiGenerateReport` 走 `AiModelConfig` 四参数配置
 - `.../chat/AiModelConfig.kt`: 四参数配置（`baseUrl`/`apiPath`/`apiKey`/`modelId`）持久化到 MMKV，`resolvedBaseUrl()` 拼接；provider 固定 OpenAI Chat Completions
+- `.../chat/TextToSpeech.kt`: 文字转语音 A 套，`ClickableFeature` + 双入口开关（`tts_entry_bubble`/`tts_entry_input_bar`，默认关闭）；魔方（HTTP REST + Bearer Key）与豆包（`generateVoiceDoubao()` WebSocket + 登录 Cookie → ADTS AAC）双后端，`tts_backend` 切换、音色各自记忆，`showSettingsDialog` 内配置 Key 与 Cookie。入口分别走 `WeChatInputBarMenuApi`（长按加号/发送按钮，注册见 `ChatFooterHooks.kt`）与 `WeChatMessageContextMenuApi`（长按消息气泡）；B 套语音面板的 `TtsMode` 在 `ui/panel/VoicePanelTtsContent.kt` + `VoicePanel.kt`，与本文件互不相干
 - `.../ui/utils/ComposeUtils.kt`: `showComposeDialog` 新增 `fullScreen` 参数（窗口 MATCH_PARENT）
 - `.github/workflows/ci.yml`: CI 配置，含 `upload-telegram` job
