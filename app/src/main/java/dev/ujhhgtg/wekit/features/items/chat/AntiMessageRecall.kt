@@ -99,7 +99,7 @@ object AntiMessageRecall : ClickableFeature(), IResolveDex, WeXmlParserApi.IAfte
 
     private const val TYPE_KEY = $$".sysmsg.$type"
     private const val RECORD_SEPARATOR = "\u001F"
-    private const val RECALL_ALPHA = 0.4f
+    private const val RECALL_ALPHA = 0.7f
     private const val BADGE_SIZE_DP = 28
     private const val BADGE_PADDING_DP = 6
     private const val BADGE_GAP_DP = 4
