@@ -6,6 +6,7 @@ import android.os.Looper
 import android.view.View
 import androidx.activity.ComponentActivity
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -321,35 +322,40 @@ object TextToSpeech :
 
                         Spacer(Modifier.height(8.dp))
 
+                        val mainOptions = if (isDoubao) {
+                            DOUBAO_VOICES.map { DropdownOption(it.id, it.label) }
+                        } else {
+                            voices.map { DropdownOption(it.voiceId, it.label) }
+                        }
+                        val customOptions = customVoices.map { DropdownOption(it.voiceId, it.label) }
+                        val customCurrent = customOptions.any { it.value == voiceId }
+
                         Row(Modifier.fillMaxWidth()) {
-                            DropDownMenuWidget(
-                                modifier = Modifier.weight(1f),
-                                title = if (isDoubao) "豆包音色" else "系统音色",
-                                description = null,
-                                value = voiceId,
-                                options = if (isDoubao) {
-                                    DOUBAO_VOICES.map { DropdownOption(it.id, it.label) }
-                                } else {
-                                    voices.map { DropdownOption(it.voiceId, it.label) }
-                                },
-                                onValueChange = {
-                                    voiceId = it
-                                    if (isDoubao) doubaoSpeaker = it else selectedVoice = it
-                                },
-                                maxVisibleItems = 6,
-                            )
+                            Box(Modifier.weight(1f)) {
+                                DropDownMenuWidget(
+                                    title = if (isDoubao) "豆包音色" else "系统音色",
+                                    description = null,
+                                    value = voiceId,
+                                    options = if (mainOptions.any { it.value == voiceId }) mainOptions
+                                        else mainOptions + DropdownOption(voiceId, voiceId),
+                                    onValueChange = {
+                                        voiceId = it
+                                        if (isDoubao) doubaoSpeaker = it else selectedVoice = it
+                                    },
+                                )
+                            }
                             Spacer(Modifier.width(8.dp))
-                            DropDownMenuWidget(
-                                modifier = Modifier.weight(1f),
-                                title = "自定义音色",
-                                description = null,
-                                value = voiceId,
-                                options = if (isDoubao) emptyList()
-                                    else customVoices.map { DropdownOption(it.voiceId, it.label) },
-                                onValueChange = { voiceId = it; selectedVoice = it },
-                                enabled = !isDoubao && customVoices.isNotEmpty(),
-                                maxVisibleItems = 6,
-                            )
+                            Box(Modifier.weight(1f)) {
+                                DropDownMenuWidget(
+                                    title = "自定义音色",
+                                    description = if (customCurrent) null else "未选择",
+                                    value = voiceId,
+                                    options = if (customCurrent) customOptions
+                                        else customOptions + DropdownOption(voiceId, ""),
+                                    onValueChange = { voiceId = it; selectedVoice = it },
+                                    enabled = !isDoubao && customVoices.isNotEmpty(),
+                                )
+                            }
                         }
 
                         Spacer(Modifier.height(8.dp))
@@ -358,7 +364,7 @@ object TextToSpeech :
                             title = "语气",
                             description = if (isDoubao) emotion else null,
                             value = emotion,
-                            options = if (isDoubao) emptyList()
+                            options = if (isDoubao) listOf(DropdownOption(emotion, emotion))
                                 else EMOTIONS.map { DropdownOption(it.first, it.first) },
                             onValueChange = { emotion = it; selectedEmotion = it },
                             enabled = !isDoubao,
