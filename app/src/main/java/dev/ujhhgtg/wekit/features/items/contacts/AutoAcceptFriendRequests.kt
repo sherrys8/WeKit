@@ -2,7 +2,6 @@ package dev.ujhhgtg.wekit.features.items.contacts
 import dev.ujhhgtg.wekit.R
 
 import android.annotation.SuppressLint
-import android.app.Activity
 import android.content.ContentValues
 import android.os.Handler
 import android.os.Looper
@@ -31,12 +30,11 @@ import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.dp
-import dev.ujhhgtg.reflekt.reflekt
-import dev.ujhhgtg.reflekt.utils.toClass
 import dev.ujhhgtg.wekit.dexkit.abc.IResolveDex
 import dev.ujhhgtg.wekit.dexkit.dsl.dexClass
 import dev.ujhhgtg.wekit.dexkit.dsl.dexConstructor
 import dev.ujhhgtg.wekit.dexkit.dsl.dexMethod
+import dev.ujhhgtg.wekit.features.api.core.WeContactApi
 import dev.ujhhgtg.wekit.features.api.core.WeDatabaseApi
 import dev.ujhhgtg.wekit.features.api.core.WeDatabaseListenerApi
 import dev.ujhhgtg.wekit.features.api.core.WeMessageApi
@@ -250,22 +248,6 @@ object AutoAcceptFriendRequests : ClickableFeature(), IResolveDex,
         }.onFailure { e ->
             WeLogger.e(TAG, "failed to hook verify accept", e)
         }
-
-        // 自动备注：钩住 SayHi（打招呼/添加好友）界面，自动填充备注名
-        "com.tencent.mm.plugin.profile.ui.SayHiWithSnsPermissionUI".toClass().reflekt()
-            .firstMethod("initView").hookBefore {
-                if (!remarkEnabled) return@hookBefore
-                val activity = thisObject as? Activity ?: return@hookBefore
-                val intent = activity.intent ?: return@hookBefore
-                val nickname = intent.getStringExtra("Contact_Nick") ?: ""
-                if (nickname.isNotEmpty()) {
-                    val remark = remarkTextFormat
-                        .replace(PLACEHOLDER_NICKNAME, nickname)
-                        .replace(PLACEHOLDER_TIME, formatEpoch(System.currentTimeMillis(), remarkTimeFormat))
-                    intent.putExtra("Contact_RemarkName", remark)
-                    WeLogger.i(TAG, "auto remark succeeded: $remark")
-                }
-            }
     }
 
     override fun onDisable() {
@@ -382,10 +364,8 @@ object AutoAcceptFriendRequests : ClickableFeature(), IResolveDex,
                 acceptFriendRequest(encryptUsername, ticket, scene)
                 WeLogger.i(TAG, "friend request accepted: encryptUsername=$encryptUsername")
 
-                // 发送欢迎语：轮询等待好友关系建立，优先用 talker/fromUser，其次 rcontact 反查
-                if (sendWelcome && welcomeText.isNotBlank()) {
-                    sendWelcomeWithRetry(encryptUsername, fromUser, messageTalker)
-                }
+                // 备注 + 欢迎语：轮询等待好友关系建立，优先用 talker/fromUser，其次 rcontact 反查
+                applyPostAcceptAutomation(encryptUsername, fromUser, messageTalker)
             }.onFailure { e ->
                 WeLogger.e(TAG, "failed to accept friend request", e)
             }
@@ -532,12 +512,10 @@ object AutoAcceptFriendRequests : ClickableFeature(), IResolveDex,
                                     runCatching {
                                         acceptFriendRequest(target, ticket, "")
                                         WeLogger.i(TAG, "[acceptFriendRequest] OK wx=$wxId")
-                                        // 等待好友关系建立后发送欢迎语：
+                                        // 等待好友关系建立后改备注/发欢迎语：
                                         // 候选目标 = rcontact 行 username(wxId)；加密键回退 rcontact 反查真实 wxid
-                                        if (sendWelcome && welcomeText.isNotBlank()) {
-                                            val key = if (!encUsername.isNullOrEmpty()) encUsername else wxId
-                                            sendWelcomeWithRetry(key, wxId, wxId)
-                                        }
+                                        val key = if (!encUsername.isNullOrEmpty()) encUsername else wxId
+                                        applyPostAcceptAutomation(key, wxId, wxId)
                                     }.onFailure { WeLogger.e(TAG, "[acceptFriendRequest] FAIL wx=$wxId", it) }
                                 }
                             }, delayMs)
@@ -607,38 +585,79 @@ object AutoAcceptFriendRequests : ClickableFeature(), IResolveDex,
     }
 
     /**
-     * 轮询等待好友关系建立后发送欢迎语。
-     * 先按用户配置的「发送延迟」等待（0 = 立即），再尝试发送；
-     * 候选目标按可靠度排序：message 表 talker / XML fromusername（真实 wxid）
-     * → rcontact 按 encryptUsername/username/alias 反查。
-     * 接受请求是异步网络往返，rcontact 落库可能晚于 accept 返回，故重试 ~15s。
+     * 接受好友申请后的自动化出口：修改备注 + 发送欢迎语。
+     * 复用原「轮询等待好友关系落库」逻辑：接受请求是异步网络往返，
+     * rcontact 落库可能晚于 accept 返回，故重试 ~15s。
+     * 欢迎语的「发送延迟」只作用于欢迎语；备注立即进入轮询。
      */
-    private suspend fun sendWelcomeWithRetry(encryptUsername: String, fromUser: String?, messageTalker: String?) {
-        val initialDelayMs = welcomeDelayMs.coerceIn(0, 60_000)
-        if (initialDelayMs > 0) {
-            delay(initialDelayMs.toLong())
-        }
+    private suspend fun applyPostAcceptAutomation(encryptUsername: String, fromUser: String?, messageTalker: String?) {
+        val remarkNeeded = remarkEnabled
+        val welcomeNeeded = sendWelcome && welcomeText.isNotBlank()
+        if (!remarkNeeded && !welcomeNeeded) return
+
+        val welcomeDelay = welcomeDelayMs.coerceIn(0, 60_000)
         val directCandidates = linkedSetOf<String>()
         messageTalker?.takeIf { it.isNotBlank() }?.let(directCandidates::add)
         fromUser?.takeIf { it.isNotBlank() }?.let(directCandidates::add)
         // 排除加密占位 ID（v2_/v3_ 开头），它们不是可发送的真实 wxid
         val realDirect = directCandidates.filter { !it.startsWith("v2_") && !it.startsWith("v3_") }
 
+        var remarkApplied = false
+        var welcomeSent = false
+
         repeat(6) { attempt ->
-            // 1) 先试已知真实目标
-            for (candidate in realDirect) {
-                if (sendWelcomeMessage(candidate)) return
+            // 1) 先试已知真实目标，2) 再查 rcontact（接受成功后 encryptUsername/username 已落库）
+            val candidates = realDirect + listOfNotNull(
+                findNewFriendWxId(encryptUsername, fromUser).takeIf { it.isNotEmpty() }
+            )
+            for (candidate in candidates) {
+                if (remarkNeeded && !remarkApplied) {
+                    remarkApplied = applyFriendRemark(candidate)
+                }
             }
-            // 2) 再查 rcontact（接受成功后 encryptUsername/username 已落库）
-            val resolved = findNewFriendWxId(encryptUsername, fromUser)
-            if (resolved.isNotEmpty() && sendWelcomeMessage(resolved)) return
+            if (welcomeNeeded && !welcomeSent) {
+                // 欢迎语延迟只在首轮发送前生效一次
+                if (attempt == 0 && welcomeDelay > 0) {
+                    delay(welcomeDelay.toLong())
+                }
+                for (candidate in candidates) {
+                    if (welcomeNeeded && !welcomeSent) {
+                        welcomeSent = sendWelcomeMessage(candidate)
+                    }
+                }
+            }
+            if ((!remarkNeeded || remarkApplied) && (!welcomeNeeded || welcomeSent)) return
             if (attempt < 5) delay(2500)
         }
         WeLogger.w(
             TAG,
-            "welcome message not sent: no resolvable target within retry window, " +
+            "post-accept automation incomplete: remarkApplied=$remarkApplied welcomeSent=$welcomeSent, " +
                 "encryptUsername=$encryptUsername fromUser=$fromUser talker=$messageTalker"
         )
+    }
+
+    /**
+     * 修改好友备注（Hchat 风格：通过申请后直接调 setcontactproperty，与界面解耦）。
+     * $nickname 取自 rcontact.nickname；资料未落库（空）且模板用到 $nickname 时
+     * 返回 false，等下一轮重试。
+     */
+    private suspend fun applyFriendRemark(wxId: String): Boolean {
+        val nickname = runCatching {
+            WeDatabaseApi.rawQuery(
+                "SELECT nickname FROM rcontact WHERE username = ?",
+                arrayOf(wxId)
+            ).use { cursor -> if (cursor.moveToFirst()) cursor.getString(0) ?: "" else "" }
+        }.getOrDefault("")
+        if (nickname.isBlank() && remarkTextFormat.contains(PLACEHOLDER_NICKNAME)) {
+            WeLogger.d(TAG, "remark skipped: nickname not ready for $wxId")
+            return false
+        }
+        val remark = remarkTextFormat
+            .replace(PLACEHOLDER_NICKNAME, nickname.ifBlank { wxId })
+            .replace(PLACEHOLDER_TIME, formatEpoch(System.currentTimeMillis(), remarkTimeFormat))
+        val ok = WeContactApi.modifyContactRemark(wxId, remark)
+        WeLogger.i(TAG, "auto remark to $wxId ok=$ok remark=$remark")
+        return ok
     }
 
     /** 发送欢迎语，成功返回 true（sendWelcome/文本非空已在调用方保证） */
@@ -826,7 +845,7 @@ object AutoAcceptFriendRequests : ClickableFeature(), IResolveDex,
                                 Switch(checked = localRemarkEnabled, onCheckedChange = null)
                             },
                             headlineContent = { Text("自动备注", fontWeight = FontWeight.SemiBold) },
-                            supportingContent = { Text("添加好友时自动设置备注名") }
+                            supportingContent = { Text("通过好友申请后自动设置备注名") }
                         )
 
                         if (localRemarkEnabled) {

@@ -24,6 +24,7 @@ import kotlinx.coroutines.withTimeoutOrNull
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.coroutines.resume
 import kotlin.time.Duration.Companion.seconds
+import org.json.JSONObject
 
 object WeContactApi : ApiFeature(), IResolveDex {
 
@@ -221,4 +222,35 @@ object WeContactApi : ApiFeature(), IResolveDex {
             WeLogger.e("WeContactApi", "verifyUser failed", e)
         }
     }
+
+    /**
+     * 修改好友备注（对齐 Hchat 的 setcontactproperty 直发实现）。
+     * payload 字段：2 = username；3.1 = 备注内容。
+     * 备注经服务端同步回本地；如需界面即时刷新，可另行更新 rcontact.conRemark。
+     */
+    suspend fun modifyContactRemark(wxId: String, remark: String): Boolean =
+        suspendCancellableCoroutine { cont ->
+            try {
+                val payload = JSONObject().apply {
+                    put("2", wxId)
+                    put("3", JSONObject().put("1", remark))
+                }
+                WePacketHelper.sendCgi(
+                    "/cgi-bin/micromsg-bin/setcontactproperty",
+                    10022,
+                    0,
+                    0,
+                    payload.toString(),
+                ) {
+                    onSuccess { _ -> if (cont.isActive) cont.resume(true) }
+                    onFailure { errType, errCode, errMsg ->
+                        WeLogger.w(TAG, "modifyContactRemark $wxId failed: $errType, $errCode, $errMsg")
+                        if (cont.isActive) cont.resume(false)
+                    }
+                }
+            } catch (e: Exception) {
+                WeLogger.e(TAG, "modifyContactRemark $wxId failed", e)
+                if (cont.isActive) cont.resume(false)
+            }
+        }
 }
