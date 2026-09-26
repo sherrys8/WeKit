@@ -341,9 +341,17 @@ object ModifyTextMessageDisplay : SwitchFeature(),
         val current: String,
     )
 
+    /**
+     * 真机确认过的文本宿主 id，其余 View（昵称、时间、平台自带字段等）不再进弹窗。
+     * 只作用于整行扫描；菜单给的那个 View 自身的「字段 + setter」通路不受白名单限制，
+     * 否则纯文本、拍一拍会再次退化。
+     */
+    private val editableViewIds = setOf("a44", "a48", "a46", "bkl", "bjp", "bju", "bj2")
+
     private fun collectTargets(menuView: View): List<TextTarget> {
         val targets = mutableListOf<TextTarget>()
         editRootOf(menuView).allViews.forEach { child ->
+            if (entryName(child) !in editableViewIds) return@forEach
             when {
                 child is TextView ->
                     if (child.text?.isNotBlank() == true) targets += TextViewTarget(child)
