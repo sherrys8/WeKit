@@ -5,7 +5,6 @@ import android.text.SpannableStringBuilder
 import android.view.View
 import android.widget.AdapterView
 import android.widget.TextView
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
@@ -21,7 +20,6 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import com.composables.icons.materialsymbols.MaterialSymbols
@@ -42,7 +40,6 @@ import dev.ujhhgtg.wekit.ui.utils.allViews
 import dev.ujhhgtg.wekit.ui.utils.showComposeDialog
 import dev.ujhhgtg.wekit.utils.HookParam
 import dev.ujhhgtg.wekit.utils.WeLogger
-import dev.ujhhgtg.wekit.utils.android.copyToClipboard
 import dev.ujhhgtg.wekit.utils.android.showToast
 import dev.ujhhgtg.wekit.utils.serialization.DefaultJson
 import java.lang.reflect.Field
@@ -124,7 +121,7 @@ object ModifyTextMessageDisplay : SwitchFeature(),
         }
 
         showComposeDialog(context) {
-            EditDialog(key, rows, dump, onDismiss)
+            EditDialog(key, rows, onDismiss)
         }
     }
 
@@ -154,11 +151,9 @@ object ModifyTextMessageDisplay : SwitchFeature(),
     private fun EditDialog(
         key: String,
         rows: List<EditableRow>,
-        dump: String,
         onDismiss: () -> Unit,
     ) {
         var inputs by remember { mutableStateOf(rows.map { it.current }) }
-        val platformContext = LocalContext.current
 
         AlertDialogContent(
             title = { Text(stringResource(R.string.chat_modify_text_title)) },
@@ -188,20 +183,6 @@ object ModifyTextMessageDisplay : SwitchFeature(),
                                 .padding(bottom = 8.dp),
                         )
                     }
-                    // 临时诊断：定位文件卡片标题这类没有 TextView 宿主的文本行
-                    Text(
-                        text = stringResource(R.string.chat_modify_text_diag),
-                        style = MaterialTheme.typography.labelSmall,
-                        modifier = Modifier.padding(top = 4.dp),
-                    )
-                    Text(
-                        text = dump,
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.clickable {
-                            copyToClipboard(platformContext, dump)
-                        },
-                    )
                 }
             },
             dismissButton = {
@@ -341,17 +322,10 @@ object ModifyTextMessageDisplay : SwitchFeature(),
         val current: String,
     )
 
-    /**
-     * 真机确认过的文本宿主 id，其余 View（昵称、时间、平台自带字段等）不再进弹窗。
-     * 只作用于整行扫描；菜单给的那个 View 自身的「字段 + setter」通路不受白名单限制，
-     * 否则纯文本、拍一拍会再次退化。
-     */
-    private val editableViewIds = setOf("a44", "a48", "a46", "bkl", "bjp", "bju", "bj2")
-
     private fun collectTargets(menuView: View): List<TextTarget> {
         val targets = mutableListOf<TextTarget>()
         editRootOf(menuView).allViews.forEach { child ->
-            if (entryName(child) !in editableViewIds) return@forEach
+            if (hostKey(child) in blacklistedTextHosts) return@forEach
             when {
                 child is TextView ->
                     if (child.text?.isNotBlank() == true) targets += TextViewTarget(child)
@@ -366,8 +340,10 @@ object ModifyTextMessageDisplay : SwitchFeature(),
         }
 
         // 菜单交给我们的往往就是正文 View 本身，它的「首个 CharSequence 字段 + 同名 setter」
-        // 是纯文本、拍一拍已验证可用的通路，始终保留；与字段行原文相同时会被并成同一行
-        HostFieldTarget(menuView).takeIf { it.current.isNotBlank() }?.let { targets += it }
+        // 是纯文本、拍一拍已验证可用的通路；与字段行原文相同时会被并成同一行
+        if (hostKey(menuView) !in blacklistedTextHosts) {
+            HostFieldTarget(menuView).takeIf { it.current.isNotBlank() }?.let { targets += it }
+        }
         return targets
     }
 
@@ -396,6 +372,28 @@ private fun entryName(view: View): String {
     return runCatching { view.resources.getResourceEntryName(view.id) }
         .getOrDefault(view.id.toString())
 }
+
+/** 黑名单键：完整类名 + "@" + R.id 条目名，与真机布局检查器给出的形式一致。 */
+private fun hostKey(view: View): String = view.javaClass.name + "@" + entryName(view)
+
+/** 真机确认过不该进弹窗的文本宿主（昵称、时间、平台自带字段、重复正文等）。 */
+private val blacklistedTextHosts = setOf(
+    "com.tencent.mm.ui.chat.view.MsgTextView@bju",
+    "com.tencent.mm.ui.chat.view.MsgTextView@bj2",
+    "com.tencent.mm.ui.chat.view.MsgTextView@a4r",
+    "com.tencent.mm.ui.chat.view.chatting_menu.B@a44",
+    "com.tencent.mm.ui.chat.view.chatting_menu.B@bkn",
+    "com.tencent.mm.ui.chat.view.chatting_menu.bkp@a44",
+    "com.tencent.mm.ui.chat.view.chatting_menu.bkp@a46",
+    "com.tencent.mm.ui.chat.view.chatting_menu.bkp@a4s",
+    "com.tencent.mm.ui.chat.view.chatting_menu.bkp@a4r",
+    "com.tencent.mm.ui.chat.view.chatting_menu.bkp@a48",
+    "com.tencent.mm.ui.chat.view.chatting_menu.bkp@bjp",
+    "com.tencent.mm.ui.chat.view.chatting_menu.bkq@bkm",
+    "com.tencent.mm.ui.chat.view.chatting_menu.bkr@bkn",
+    "com.tencent.mm.ui.chat.view.chatting_menu.bks@bkn",
+    "com.tencent.mm.ui.chat.view.chatting_menu.bkl@a46",
+)
 
 /** 自绘文本宿主：类名去掉数字混淆位后含 `extView`（如 MMNeat7extView）。 */
 private fun isTextHost(view: View): Boolean =
