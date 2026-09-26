@@ -55,6 +55,11 @@ object WeChatMessageViewApi : ApiFeature(), IResolveDex {
         )
     }
 
+    // the message currently bound to a chat item view; populated before onCreateView dispatches,
+    // so listeners can resolve their target without reflecting on the view tag again
+    fun getMessageOfView(view: View): MessageInfo? =
+        synchronized(currentBindings) { currentBindings[view] }
+
     fun addLifecycleListener(listener: IMessageViewLifecycleListener) {
         if (!lifecycleListeners.contains(listener)) {
             lifecycleListeners.add(listener)
