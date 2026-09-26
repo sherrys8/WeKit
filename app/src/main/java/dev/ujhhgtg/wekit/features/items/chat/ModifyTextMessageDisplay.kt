@@ -1,5 +1,7 @@
 package dev.ujhhgtg.wekit.features.items.chat
 
+import android.text.SpannableString
+import android.text.SpannableStringBuilder
 import android.view.View
 import android.widget.TextView
 import androidx.compose.foundation.clickable
@@ -36,13 +38,14 @@ import dev.ujhhgtg.wekit.ui.content.AlertDialogContent
 import dev.ujhhgtg.wekit.ui.content.TextButton
 import dev.ujhhgtg.wekit.ui.utils.EditIcon
 import dev.ujhhgtg.wekit.ui.utils.allViews
-import dev.ujhhgtg.wekit.ui.utils.findViewsWhich
 import dev.ujhhgtg.wekit.ui.utils.showComposeDialog
 import dev.ujhhgtg.wekit.utils.HookParam
 import dev.ujhhgtg.wekit.utils.WeLogger
 import dev.ujhhgtg.wekit.utils.android.copyToClipboard
 import dev.ujhhgtg.wekit.utils.android.showToast
 import dev.ujhhgtg.wekit.utils.serialization.DefaultJson
+import java.lang.reflect.Field
+import java.lang.reflect.Modifier as JavaModifier
 
 object ModifyTextMessageDisplay : SwitchFeature(),
     WeChatMessageContextMenuApi.IMenuItemsProvider,
@@ -297,6 +300,22 @@ object ModifyTextMessageDisplay : SwitchFeature(),
     }
 
     /**
+     * 微信把 `TextView` 的 T 换成 7 造出的自绘文本宿主（文件卡片名、引用块正文），
+     * 不是 TextView 子类，只能按字段逐个改写。
+     */
+    private class FieldValueTarget(
+        override val hostView: View,
+        private val field: Field,
+    ) : TextTarget {
+        override val current get() = field.get(hostView)?.toString().orEmpty()
+        override val label get() = hostView.javaClass.simpleName + "#" + entryName(hostView) + "." + field.name
+        override fun write(value: String) {
+            coerceToField(field, value)?.let { field.set(hostView, it) }
+            hostView.invalidate()
+        }
+    }
+
+    /**
      * 纯文本、拍一拍这类气泡的正文不在子 TextView 上，而是条目 View 自己的
      * CharSequence 字段 + 同名 setter（旧版实现通路），保留为兜底。
      */
@@ -322,13 +341,31 @@ object ModifyTextMessageDisplay : SwitchFeature(),
     )
 
     private fun collectTargets(root: View): List<TextTarget> {
-        val labels = root.findViewsWhich { it is TextView && it.text?.isNotBlank() == true }
-            .map { TextViewTarget(it as TextView) }
-            .toList()
-        if (labels.isNotEmpty()) return labels
+        val targets = mutableListOf<TextTarget>()
+        root.allViews.forEach { child ->
+            when {
+                child is TextView ->
+                    if (child.text?.isNotBlank() == true) targets += TextViewTarget(child)
 
-        val host = HostFieldTarget(root)
-        return if (host.current.isBlank()) emptyList() else listOf(host)
+                isTextHost(child) ->
+                    settableTextFields(child).forEach { field ->
+                        FieldValueTarget(child, field)
+                            .takeIf { it.current.isNotBlank() }
+                            ?.let { targets += it }
+                    }
+            }
+        }
+
+        // 引用消息这类整条气泡就是文本宿主的场景：保留旧版「首个字段 + 同名 setter」写入口，
+        // 它和字段行会因原文相同被并成一行，两个写法则同时生效
+        if (root !is TextView && isTextHost(root)) {
+            HostFieldTarget(root).takeIf { it.current.isNotBlank() }?.let { targets += it }
+        }
+
+        if (targets.isNotEmpty()) return targets
+
+        val legacy = HostFieldTarget(root)
+        return if (legacy.current.isBlank()) emptyList() else listOf(legacy)
     }
 
     /** 每次打开弹窗记录一次气泡子树，用于定位没有 TextView 宿主的文本行。 */
@@ -338,7 +375,13 @@ object ModifyTextMessageDisplay : SwitchFeature(),
             append('\n').append(child.javaClass.simpleName)
                 .append(" id=").append(entryName(child))
                 .append(" vis=").append(child.visibility)
-            if (child is TextView) append(" text=").append(child.text.take(40))
+            when {
+                child is TextView -> append(" text=").append(child.text.take(40))
+                isTextHost(child) -> append(" fields=")
+                    .append(settableTextFields(child).joinToString(",", "[", "]") { field ->
+                        field.name + "=" + field.get(child)?.toString()?.take(24).orEmpty()
+                    })
+            }
         }
     }
 }
@@ -347,4 +390,38 @@ private fun entryName(view: View): String {
     if (view.id == View.NO_ID) return "none"
     return runCatching { view.resources.getResourceEntryName(view.id) }
         .getOrDefault(view.id.toString())
+}
+
+/** 自绘文本宿主：类名去掉数字混淆位后含 `extView`（如 MMNeat7extView）。 */
+private fun isTextHost(view: View): Boolean =
+    view.javaClass.simpleName.filterNot { it.isDigit() }.contains("extView")
+
+private fun acceptsTextField(field: Field): Boolean =
+    field.type == String::class.java || field.type == CharSequence::class.java ||
+            SpannableString::class.java.isAssignableFrom(field.type) ||
+            SpannableStringBuilder::class.java.isAssignableFrom(field.type)
+
+/** 宿主自绘文本时可能缓存 Spannable 变体，按字段声明类型构造对应实现。 */
+private fun coerceToField(field: Field, value: String): Any? = when {
+    field.type == String::class.java || field.type == CharSequence::class.java -> value
+    SpannableStringBuilder::class.java.isAssignableFrom(field.type) -> SpannableStringBuilder(value)
+    SpannableString::class.java.isAssignableFrom(field.type) -> SpannableString(value)
+    else -> null
+}
+
+private fun settableTextFields(host: View): List<Field> {
+    val fields = mutableListOf<Field>()
+    var clazz: Class<*>? = host.javaClass
+    var depth = 0
+    while (clazz != null && clazz != Any::class.java && depth < 4) {
+        clazz.declaredFields.forEach { field ->
+            if (!JavaModifier.isStatic(field.modifiers) && acceptsTextField(field)) {
+                field.isAccessible = true
+                fields += field
+            }
+        }
+        clazz = clazz.superclass
+        depth++
+    }
+    return fields
 }
