@@ -1843,6 +1843,7 @@
     <string name="chat_modify_text_no_editable">这条消息没有可修改的文本</string>
     <string name="chat_modify_text_revert">恢复原文</string>
     <string name="chat_modify_text_saved">已修改本地显示</string>
+    <string name="chat_modify_text_diag">诊断信息（点击复制）</string>
     <string name="chat_quote_jump_message_list">消息列表引用直达</string>
     <string name="chat_quote_jump_message_list_description">点击聊天消息中的被引用消息时，直接跳转到原消息</string>
     <string name="chat_quote_jump_input_box">输入框引用直达</string>

@@ -2,6 +2,7 @@ package dev.ujhhgtg.wekit.features.items.chat
 
 import android.view.View
 import android.widget.TextView
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
@@ -17,6 +18,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import com.composables.icons.materialsymbols.MaterialSymbols
@@ -38,6 +40,7 @@ import dev.ujhhgtg.wekit.ui.utils.findViewsWhich
 import dev.ujhhgtg.wekit.ui.utils.showComposeDialog
 import dev.ujhhgtg.wekit.utils.HookParam
 import dev.ujhhgtg.wekit.utils.WeLogger
+import dev.ujhhgtg.wekit.utils.android.copyToClipboard
 import dev.ujhhgtg.wekit.utils.android.showToast
 import dev.ujhhgtg.wekit.utils.serialization.DefaultJson
 
@@ -103,7 +106,8 @@ object ModifyTextMessageDisplay : SwitchFeature(),
 
     private fun openEditor(view: View, message: MessageInfo) {
         loadOverrides()
-        logSubtree(view)
+        val dump = buildSubtreeDump(view)
+        WeLogger.i(TAG, dump)
 
         val key = messageKey(message)
         val saved = overrides[key].orEmpty()
@@ -116,7 +120,7 @@ object ModifyTextMessageDisplay : SwitchFeature(),
         }
 
         showComposeDialog(context) {
-            EditDialog(key, rows, onDismiss)
+            EditDialog(key, rows, dump, onDismiss)
         }
     }
 
@@ -143,7 +147,12 @@ object ModifyTextMessageDisplay : SwitchFeature(),
     }
 
     @Composable
-    private fun EditDialog(key: String, rows: List<EditableRow>, onDismiss: () -> Unit) {
+    private fun EditDialog(
+        key: String,
+        rows: List<EditableRow>,
+        dump: String,
+        onDismiss: () -> Unit,
+    ) {
         var inputs by remember { mutableStateOf(rows.map { it.current }) }
 
         AlertDialogContent(
@@ -174,6 +183,20 @@ object ModifyTextMessageDisplay : SwitchFeature(),
                                 .padding(bottom = 8.dp),
                         )
                     }
+                    // 临时诊断：定位文件卡片标题这类没有 TextView 宿主的文本行
+                    Text(
+                        text = stringResource(R.string.chat_modify_text_diag),
+                        style = MaterialTheme.typography.labelSmall,
+                        modifier = Modifier.padding(top = 4.dp),
+                    )
+                    Text(
+                        text = dump,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.clickable {
+                            copyToClipboard(LocalContext, dump)
+                        },
+                    )
                 }
             },
             dismissButton = {
@@ -308,17 +331,14 @@ object ModifyTextMessageDisplay : SwitchFeature(),
     }
 
     /** 每次打开弹窗记录一次气泡子树，用于定位没有 TextView 宿主的文本行。 */
-    private fun logSubtree(root: View) {
-        val dump = buildString {
-            append("bubble root=").append(root.javaClass.name)
-            root.allViews.forEach { child ->
-                append('\n').append(child.javaClass.simpleName)
-                    .append(" id=").append(entryName(child))
-                    .append(" vis=").append(child.visibility)
-                if (child is TextView) append(" text=").append(child.text.take(40))
-            }
+    private fun buildSubtreeDump(root: View): String = buildString {
+        append("bubble root=").append(root.javaClass.name)
+        root.allViews.take(40).forEach { child ->
+            append('\n').append(child.javaClass.simpleName)
+                .append(" id=").append(entryName(child))
+                .append(" vis=").append(child.visibility)
+            if (child is TextView) append(" text=").append(child.text.take(40))
         }
-        WeLogger.i(TAG, dump)
     }
 }
 
