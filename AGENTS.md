@@ -282,7 +282,9 @@ Prefer these over raw Compose controls:
 ## CI
 
 - GitHub Actions: builds on push/PR to `master`/`dev`/`dev-sherry`。纯文档变更（`*.md`/`*.txt` 等 paths-ignore 列表内文件）不会触发 CI；修改 AGENTS.md 无需构建，不会跑 CI
-- Artifacts automatically published to a release named "CI" + Telegram channel
+- `build` job 自 `684cb3d2` 起**只构建 standard 一个 flavor**（`./x build --release --flavor standard`）：不带 `--flavor` 会走 `assembleRelease` 把 standard/legacy 各编一遍，实测 21m32s → 13m48s。legacy 需要时本地 `./x build --release --flavor legacy`
+- 产物只经 `upload-telegram` 发到 Telegram 频道；本 fork 的 `dev-sherry` **不建 GitHub release**（`gh release list` 只有 Extensions / Dex Test），AGENTS 旧述的「release named CI」在本分支不成立
+- APK 仍是双格式：同一个包可直接装为 APK，或改后缀 `.zip` 经 root 管理器装为 Zygisk 模块，flavor 只决定 libxposed 入口有无（standard 有、legacy 无），与双格式无关
 
 ## Progress
 ### Done
@@ -332,9 +334,20 @@ Prefer these over raw Compose controls:
 - 豆包协议要点（参考实现见 Critical Context）：鉴权只在 WebSocket 握手期完成，9 个音色全部需要 `sessionid`+`sid_guard`+`uid_tt`（约 30 天）；结束判定不能照抄参考实现的 30 秒 `recv` 超时，改为「连续 2.5 秒无新增字节」或 `onClosing`/`code != 0` 收尾、30 秒兜底上限
 - CI 修复 `8fc0e276`：OkHttp **5.5.0** 的 `WebSocketListener.onFailure` 形参是 `Throwable` 而非 `IOException`，按后者覆写会报 `'onFailure' overrides nothing` 并使 `:app:compileStandardReleaseKotlin` 直接失败；`okio.ByteString`（`onMessage` 二进制重载）解析正常，属全仓首次引入 okio
 - 魔方/豆包切换冲突修复 `1d2f285a`：原 `LaunchedEffect(Unit)` 只在弹窗打开时取一次魔方音色，从豆包切回魔方时列表只剩 `DEFAULT_VOICES` 三条、`customVoices` 为空导致该行不可选，且残留的豆包 speaker id 会被魔方接口拒绝，而提示是写死的「请检查 API Key 与网络」；改为 `LaunchedEffect(backendMode)` 且仅魔方模式请求，回填前用 `backend` 偏好做竞态二次校验（`return@post`），所选不在魔方列表内时归位到首个音色；`generateVoice` 回调扩为 `(String?, String)`，把 HTTP 状态与服务端 `code`/`msg` 带进 toast
+- 「修改文本消息显示」(`ModifyTextMessageDisplay`) 从「仅文本气泡、一次性 setText」升级为「任意气泡 + 持久重放」，commits `c0d4cf0f`→`9e9d549e`→`4fdcc3cc`→`2441990d`→`cc734e08`→`713537c5`→`ce83340b`：
+  - 菜单项白名单放开到文本/引用、红包（含专属与封面）、转账、链接/音乐/商品、名片、文件、群公告、拍一拍、APP、系统/位置/视频号；图片、语音、视频、表情不进菜单（`isEditableBubble`）
+  - 统一抽象 `TextTarget` 三种宿主：`TextViewTarget`（真 TextView）、`FieldValueTarget`（自绘文本宿主的全部可写 CharSequence/String/Spannable* 字段，按声明类型构造后 `invalidate()`）、`HostFieldTarget`（菜单给的 View 自身「首个 CharSequence 字段 + 同名 setter」，即旧版通路）
+  - 弹窗按行列出该消息内每个文本宿主各一行（同原文的多个 View/字段并成一行的多个 target），只改动过的；新增「恢复原文」清除该条记录
+  - 持久化：偏好 `modify_text_message_display_overrides` 存 `{"talker|msgSvrId": {"原文": "替换"}}`（serverId 为 0 退回 msgId），实现 `WeChatMessageViewApi.ICreateViewListener` 在**每次绑定**按原文匹配重放，上限 200 条消息、超出丢最旧；重开弹窗按替换值反查原文，避免叠加第二层改写
+  - `WeChatMessageViewApi` 新增 `getMessageOfView(view)`，复用其 `WeakHashMap<View, MessageInfo>`，监听方不再每次绑定反射 view tag
+  - 行过滤：整行扫描只保留资源 id ∈ `{a44, a48, a46, bkl, bjp, bju, bj2}`（用户真机指定）；菜单自身 View 的 `HostFieldTarget` 不受白名单限制，否则纯文本/拍一拍再次退化
+  - 三语言新增 `chat_modify_text_no_editable`/`_revert`/`_saved`/`_diag`，`feature_modify_text_message_display_description` 改写
+- 宿主文本定位真机结论（详见 Critical Context 同名条目）：文件卡片 `<title>` 在 `MMNeat7extView id=bju`、大小在 `MMTextView id=bj2`；引用消息菜单给的是正文叶子 View `MMNeat7extView id=bkl`，引用块是同行的兄弟 View，故编辑与重放都要上溯到「行根」
+- CI 单 flavor 化 `684cb3d2`（见 CI 节）；备份分支 `backup/dev-sherry-20260926` = `b02c2c79` 已推 `sherrys8/WeKit`（`backup/*` 不在 CI 分支过滤内，不触发构建）
 
 ### In Progress
 - 豆包后端与魔方切换的真机验证矩阵：豆包生成 → 切回魔方确认音色列表恢复且可生成 → 再切回豆包；魔方若仍失败，需回读 toast 中的 `code=`/`msg` 才能定位是 Key、额度还是音色名问题。CI 侧 `build`/`build_zygisk`/`upload-telegram` 均绿，仅 `dex-test` 的 `Enforce Dex resolution result` 为分支既有失败（1 个 `UNEXPECTED_FAILURE` + 3 个 `BLOCKED`），本轮未改任何 Dex 声明，按约定不追
+- 「修改文本消息显示」待真机收尾：① 确认 id 白名单给出的行集正好（引用消息要能改到被引用的那段），若还有多余/缺失行按 `类名#id.字段` 增删 id；② 确认后**删除每行的 `类名#id.字段` 标注与弹窗底部诊断区块**（含 `chat_modify_text_diag` 三语言串与 `buildSubtreeDump`），这是用户明确要求的收尾；③ 验证滚动/重进聊天/切会话后替换仍生效，以及「恢复原文」干净
 
 ## Key Decisions
 - 设置页使用弹窗（`showComposeDialog`）而非独立 Activity
@@ -347,17 +360,29 @@ Prefer these over raw Compose controls:
 - 豆包切换保持弹窗布局完全不变，只换数据来源；语气与自定义音色在豆包模式下禁用而非隐藏（用户明确要求不换布局）
 - 文字转语音两个菜单入口默认关闭，由用户在功能设置弹窗中自行开启（老用户升级后气泡菜单会先消失，属预期）
 - A 套弹窗新增文案沿用硬编码中文，本轮不做三语言资源化（用户选择「只新增本次需要的字符串」）
+- 本地改显示文本要「持久」就用**重绑重放**（`ICreateViewListener.onCreateView` + 按原文匹配），不去 hook 全局 `TextView.setText` 改 `args[0]`：后者每次渲染全进程生效，会污染宿主自身绘制且难定位
+- 「修改文本消息显示」的可编辑行按**微信资源 entry name 白名单**筛选，而不是按类名/文本形态猜：昵称、时间等同为 TextView，只有 id 能稳定区分该不该改
+- 该功能的行白名单**不约束**菜单自身 View 的「字段 + setter」通路，因为纯文本/拍一拍只有这条路（用户实测过），过滤它会再次退化
+- CI 只构建 standard flavor（用户要求省时间），legacy 需要时本地单独构建，不再为 PR/推送兜底双包
 
 ## Next Steps
 1. 群聊分析 ComponentActivity 全屏切换已提交，待 CI 构建验证（本地不构建，CI 负责编译）；真机验证长按菜单 → 全屏界面、状态栏着色、键盘弹起（ADJUST_RESIZE）
 2. 文字转语音豆包后端：`1d2f285a` 已推送且 `build` 绿，待真机跑完「豆包 → 魔方 → 豆包」往返验证（音色列表、自定义音色、生成结果）；若魔方 toast 带出 `code=`，据此决定是否补错误分型
 3. 豆包未做客户端节流：约 6 次快请求即触发 `710022002` block，如实际使用中频繁撞墙，再补最小间隔与冷却提示
+4. 「修改文本消息显示」`ce83340b`（id 白名单）已推、CI 单 flavor 化生效：待真机确认引用块可改且行集干净，随后按 In Progress 条目删除字段标注与诊断区块
 
 ## Critical Context
-- 远端 `origin/dev-sherry` 最新 commit：`1d2f285a`
+- 远端 `origin/dev-sherry` 最新 commit：`ce83340b`（本地与远端同步；备份分支 `backup/dev-sherry-20260926` = `b02c2c79`）
+- **微信气泡文本宿主分布（真机 dump 结论，做同类功能必读）**：
+  - `com.tencent.mm.ui.widget.MMNeat7extView` 是自绘文本 View（微信把 `TextView` 的 `T` 换成 `7`），**既不是 `TextView` 子类也不是 `ViewGroup`**，`is TextView` 与按名含 "Text" 匹配都拿不到它；判定规则用「类名去掉数字位后含 `extView`」。它的文本在自己的 CharSequence 字段上，写字段 + `invalidate()` **确实会重绘**（文件卡片 `<title>` = `id=bju` 已验证）
+  - 文件卡片：文件名 `MMNeat7extView id=bju`，大小 `MMTextView id=bj2`
+  - 长按菜单回调给的 `args[1]` **可能只是正文叶子 View**（引用消息即 `MMNeat7extView id=bkl`，其子树就它一个），引用块等同行兄弟 View 不在其中；要覆盖整条气泡必须向上爬到「行根」（父级是 `AdapterView` 或类名含 `RecyclerView` 即停，限 6 跳），且**编辑与重绑重放要用同一个根**
+  - 反射父类字段若不在 `android.`/`androidx.` 处停下，会扫到 `android.view.View` 自带成员（`handleResultReason` 值就是 `handled by onTouchEvent`、`mContentDescription`、`mTransitionName`、`mAllowedHandwriting*PackageName` 等），造出假的可编辑行，`mContentDescription` 还会与正文重复
+  - 纯文本、拍一拍（PAT）气泡的正文**不在子 TextView 上**，而在条目 View 自己的 CharSequence 字段 + 同名 setter 上；只遍历 TextView 会静默改不到它们
+- **日志与产物获取**：`WeLogger` 的 logcat tag 恒为 `WeKit`（`BuildConfig.TAG`），功能名只是消息前缀（`Log.i(TAG, "$tag: $msg")`），按功能名过滤 tag 搜不到；文件日志在 `/storage/emulated/0/Android/data/com.tencent.mm/WeKit/logs/wekit-<日期>.log`。本分支 APK 只经 Telegram 下发，GitHub 上没有 "CI" release
 - 豆包 TTS 参考实现在仓库根的 `doubao-tts/`：它是**未被本仓库跟踪的嵌套浅克隆**（自带 `.git`，源 `https://github.com/sherrys7/doubao-tts`，仅 1 个 commit），`git add -A` 只会写入 gitlink 而不会收进文件内容；其中 `_decode.py`/`_serve.py`/`doubao-voice-audition.js` 连内层仓库也未跟踪（本地自写的试听面板与 ADTS 帧校验工具）。实测约束：跨域 `Origin` 会被握手层直接拒（close 1006，症状酷似风控，但原生客户端自设 `Origin` 头不受此限）；约 6 次快速请求触发服务端 `710022002` block；`speech_rate` 量纲未验证，故 WeKit 侧固定传 0；README 自述为逆向工程、仅供学习研究，失效时先看 Cookie 是否过期（约 30 天）
 - 豆包 Cookie 是等价于账号登录态的凭据（`sessionid`/`sid_guard`/`uid_tt`），存于 `WePrefs` 的 MMKV 明文偏好中，无 cryptKey；设置项以 password 模式输入，日志不打印其内容
-- 本仓库提交身份是**仓库级**覆盖：`sherrys8 <323482072+sherrys8@users.noreply.github.com>`（全局 `~/.gitconfig` 是 `sherrys7`/`sherrys7@qq.com`）；推送凭据为 Git Credential Manager（`credential.helper=manager`）+ 已登录 sherrys8 的 `gh` CLI，远端走 HTTPS。另一克隆 `D:\1\ZcodeData\dev-sherry\repo` 配的是 sherrys7 + 公司域名邮箱，公开历史中已出现上百次，未做处理，提交前先看 `git config user.email`
+- 本仓库提交身份是**仓库级**覆盖：`sherrys8 <323482072+sherrys8@users.noreply.github.com>`；全局 `~/.gitconfig` 是 `sherrys7` / `sherrys7@users.noreply.github.com`（2026-09-26 实测，旧述的 `sherrys7@qq.com` 已过期）。**推送凭据**：github.com 被全局 `credential.https://github.com.helper` 指定为 `gh auth git-credential`，即走已登录的 **sherrys8** gh token；系统级 `credential.helper=manager`（GCM）只对其它主机生效。另一克隆 `D:\1\ZcodeData\dev-sherry\repo` 配的是 sherrys7 + 公司域名邮箱 `monkeycode-ai@chaitin.com`，公开历史中已出现上百次，未做处理，提交前先看 `git config user.email`
 - 本分支 `dex-test` job 的 `Enforce Dex resolution result` 长期失败（1 个 `UNEXPECTED_FAILURE` + 3 个 `BLOCKED`），`build`/`build_zygisk`/`upload-telegram` 正常；纯逻辑改动撞到这个红叉不必追
 - 网易云 API：`FFAPI = "https://ffapi.cn/int/v1/dg_netease"`
   - 搜索 `GET ?msg={keyword}&limit=20&format=json` → `data[{n, title, singer, pic}]`
@@ -386,4 +411,7 @@ Prefer these over raw Compose controls:
 - `.../chat/AiModelConfig.kt`: 四参数配置（`baseUrl`/`apiPath`/`apiKey`/`modelId`）持久化到 MMKV，`resolvedBaseUrl()` 拼接；provider 固定 OpenAI Chat Completions
 - `.../chat/TextToSpeech.kt`: 文字转语音 A 套，`ClickableFeature` + 双入口开关（`tts_entry_bubble`/`tts_entry_input_bar`，默认关闭）；魔方（HTTP REST + Bearer Key）与豆包（`generateVoiceDoubao()` WebSocket + 登录 Cookie → ADTS AAC）双后端，`tts_backend` 切换、音色各自记忆，`showSettingsDialog` 内配置 Key 与 Cookie。入口分别走 `WeChatInputBarMenuApi`（长按加号/发送按钮，注册见 `ChatFooterHooks.kt`）与 `WeChatMessageContextMenuApi`（长按消息气泡）；B 套语音面板的 `TtsMode` 在 `ui/panel/VoicePanelTtsContent.kt` + `VoicePanel.kt`，与本文件互不相干
 - `.../ui/utils/ComposeUtils.kt`: `showComposeDialog` 新增 `fullScreen` 参数（窗口 MATCH_PARENT）
-- `.github/workflows/ci.yml`: CI 配置，含 `upload-telegram` job
+- `.../chat/ModifyTextMessageDisplay.kt`: 修改文本消息显示，`SwitchFeature` + 长按菜单 provider + `WeChatMessageViewApi.ICreateViewListener`；`TextTarget` 三态（TextView / 自绘宿主字段 / 菜单 View 自身字段+setter）、id 白名单 `editableViewIds`、偏好 `modify_text_message_display_overrides` 存「原文→替换」并在每次绑定重放；弹窗暂带 `类名#id.字段` 标注与子树诊断（待删）
+- `.../features/api/ui/WeChatMessageViewApi.kt`: 消息 View 绑定监听（`onBindView`/`onViewRecycled`），新增 `getMessageOfView(view)` 供监听方按 View 取 `MessageInfo`
+- `.../ui/utils/ViewUtils.kt`: `allViews`（前序 DFS，含自身）与 `findViewsWhich`/`findViewWhich`，遍历气泡子树统一走这里
+- `.github/workflows/ci.yml`: CI 配置，含 `upload-telegram` job；`build` 已改为只编 standard flavor
