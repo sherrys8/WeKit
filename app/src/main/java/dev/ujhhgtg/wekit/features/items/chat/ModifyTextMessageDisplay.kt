@@ -154,6 +154,7 @@ object ModifyTextMessageDisplay : SwitchFeature(),
         onDismiss: () -> Unit,
     ) {
         var inputs by remember { mutableStateOf(rows.map { it.current }) }
+        val platformContext = LocalContext.current
 
         AlertDialogContent(
             title = { Text(stringResource(R.string.chat_modify_text_title)) },
@@ -194,7 +195,7 @@ object ModifyTextMessageDisplay : SwitchFeature(),
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.clickable {
-                            copyToClipboard(LocalContext, dump)
+                            copyToClipboard(platformContext, dump)
                         },
                     )
                 }
