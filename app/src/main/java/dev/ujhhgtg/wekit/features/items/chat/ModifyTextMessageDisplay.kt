@@ -3,6 +3,7 @@ package dev.ujhhgtg.wekit.features.items.chat
 import android.text.SpannableString
 import android.text.SpannableStringBuilder
 import android.view.View
+import android.widget.AdapterView
 import android.widget.TextView
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Column
@@ -340,9 +341,9 @@ object ModifyTextMessageDisplay : SwitchFeature(),
         val current: String,
     )
 
-    private fun collectTargets(root: View): List<TextTarget> {
+    private fun collectTargets(menuView: View): List<TextTarget> {
         val targets = mutableListOf<TextTarget>()
-        root.allViews.forEach { child ->
+        editRootOf(menuView).allViews.forEach { child ->
             when {
                 child is TextView ->
                     if (child.text?.isNotBlank() == true) targets += TextViewTarget(child)
@@ -356,21 +357,17 @@ object ModifyTextMessageDisplay : SwitchFeature(),
             }
         }
 
-        // 引用消息这类整条气泡就是文本宿主的场景：保留旧版「首个字段 + 同名 setter」写入口，
-        // 它和字段行会因原文相同被并成一行，两个写法则同时生效
-        if (root !is TextView && isTextHost(root)) {
-            HostFieldTarget(root).takeIf { it.current.isNotBlank() }?.let { targets += it }
-        }
-
-        if (targets.isNotEmpty()) return targets
-
-        val legacy = HostFieldTarget(root)
-        return if (legacy.current.isBlank()) emptyList() else listOf(legacy)
+        // 菜单交给我们的往往就是正文 View 本身，它的「首个 CharSequence 字段 + 同名 setter」
+        // 是纯文本、拍一拍已验证可用的通路，始终保留；与字段行原文相同时会被并成同一行
+        HostFieldTarget(menuView).takeIf { it.current.isNotBlank() }?.let { targets += it }
+        return targets
     }
 
-    /** 每次打开弹窗记录一次气泡子树，用于定位没有 TextView 宿主的文本行。 */
-    private fun buildSubtreeDump(root: View): String = buildString {
-        append("bubble root=").append(root.javaClass.name)
+    /** 每次打开弹窗记录一次消息行子树，用于定位没有 TextView 宿主的文本行。 */
+    private fun buildSubtreeDump(menuView: View): String = buildString {
+        val root = editRootOf(menuView)
+        append("menu=").append(menuView.javaClass.name)
+            .append("\nrow=").append(root.javaClass.name)
         root.allViews.take(40).forEach { child ->
             append('\n').append(child.javaClass.simpleName)
                 .append(" id=").append(entryName(child))
@@ -412,8 +409,7 @@ private fun coerceToField(field: Field, value: String): Any? = when {
 private fun settableTextFields(host: View): List<Field> {
     val fields = mutableListOf<Field>()
     var clazz: Class<*>? = host.javaClass
-    var depth = 0
-    while (clazz != null && clazz != Any::class.java && depth < 4) {
+    while (clazz != null && !clazz.name.startsWith("android.") && !clazz.name.startsWith("androidx.")) {
         clazz.declaredFields.forEach { field ->
             if (!JavaModifier.isStatic(field.modifiers) && acceptsTextField(field)) {
                 field.isAccessible = true
@@ -421,7 +417,22 @@ private fun settableTextFields(host: View): List<Field> {
             }
         }
         clazz = clazz.superclass
-        depth++
     }
     return fields
+}
+
+/**
+ * 引用块的正文不在长按菜单给出的那个正文 View 子树里，而是它的兄弟 View，
+ * 因此把编辑范围上溯到整条消息行；父级是列表宿主时即为本行根节点。
+ */
+private fun editRootOf(view: View): View {
+    var node = view
+    var hops = 0
+    while (node.parent is View && hops < 6) {
+        val parent = node.parent as View
+        if (parent is AdapterView<*> || parent.javaClass.name.contains("RecyclerView")) break
+        node = parent
+        hops++
+    }
+    return node
 }
