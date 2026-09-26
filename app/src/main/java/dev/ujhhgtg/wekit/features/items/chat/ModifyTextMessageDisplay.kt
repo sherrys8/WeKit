@@ -21,6 +21,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import com.composables.icons.materialsymbols.MaterialSymbols
 import com.composables.icons.materialsymbols.outlined.Edit
+import dev.ujhhgtg.reflekt.reflekt
 import dev.ujhhgtg.wekit.R
 import dev.ujhhgtg.wekit.features.api.core.models.MessageInfo
 import dev.ujhhgtg.wekit.features.api.core.models.MessageType
@@ -32,9 +33,11 @@ import dev.ujhhgtg.wekit.preferences.WePrefs.Companion.prefOption
 import dev.ujhhgtg.wekit.ui.content.AlertDialogContent
 import dev.ujhhgtg.wekit.ui.content.TextButton
 import dev.ujhhgtg.wekit.ui.utils.EditIcon
+import dev.ujhhgtg.wekit.ui.utils.allViews
 import dev.ujhhgtg.wekit.ui.utils.findViewsWhich
 import dev.ujhhgtg.wekit.ui.utils.showComposeDialog
 import dev.ujhhgtg.wekit.utils.HookParam
+import dev.ujhhgtg.wekit.utils.WeLogger
 import dev.ujhhgtg.wekit.utils.android.showToast
 import dev.ujhhgtg.wekit.utils.serialization.DefaultJson
 
@@ -47,6 +50,7 @@ object ModifyTextMessageDisplay : SwitchFeature(),
     override val categoryIds = listOf(FeatureCategoryIds.CHAT)
     override val descriptionRes = R.string.feature_modify_text_message_display_description
 
+    private const val TAG = "ModifyTextMessageDisplay"
     private const val MENU_ITEM_ID = 777002
     private const val OVERRIDES_KEY = "modify_text_message_display_overrides"
 
@@ -58,13 +62,6 @@ object ModifyTextMessageDisplay : SwitchFeature(),
     /** key: 消息标识; value: 原文 -> 替换文本（插入序即修改序，用于淘汰最旧条目） */
     private val overrides = LinkedHashMap<String, MutableMap<String, String>>()
     private var loaded = false
-
-    /** 气泡内一行可编辑文本：承载它的 TextView 集合、它的原始文本、当前显示文本。 */
-    private class EditableRow(
-        val views: List<TextView>,
-        val original: String,
-        val current: String,
-    )
 
     override fun onEnable() {
         WeChatMessageContextMenuApi.addProvider(this)
@@ -106,9 +103,11 @@ object ModifyTextMessageDisplay : SwitchFeature(),
 
     private fun openEditor(view: View, message: MessageInfo) {
         loadOverrides()
+        logSubtree(view)
+
         val key = messageKey(message)
         val saved = overrides[key].orEmpty()
-        val rows = editableRows(view, saved)
+        val rows = editableRows(collectTargets(view), saved)
 
         val context = view.context
         if (rows.isEmpty()) {
@@ -122,21 +121,25 @@ object ModifyTextMessageDisplay : SwitchFeature(),
     }
 
     /**
-     * 每个非空 TextView 一行；已被本功能改过的行按原文归位，
+     * 每个有文本的目标一行；已被本功能改过的目标按原文归位，
      * 否则重进弹窗会把替换文本当成原文，导致改写叠加。
      */
-    private fun editableRows(root: View, saved: Map<String, String>): List<EditableRow> {
-        val grouped = LinkedHashMap<String, MutableList<TextView>>()
+    private fun editableRows(
+        targets: List<TextTarget>,
+        saved: Map<String, String>,
+    ): List<EditableRow> {
+        val grouped = LinkedHashMap<String, MutableList<TextTarget>>()
         val displayed = LinkedHashMap<String, String>()
-        root.findViewsWhich { it is TextView && it.text?.isNotBlank() == true }
-            .forEach { child ->
-                val label = child as TextView
-                val current = label.text.toString()
-                val original = saved.entries.firstOrNull { it.value == current }?.key ?: current
-                grouped.getOrPut(original) { mutableListOf() }.add(label)
-                displayed.putIfAbsent(original, current)
-            }
-        return grouped.map { (original, views) -> EditableRow(views, original, displayed[original]!!) }
+        targets.forEach { target ->
+            val current = target.current
+            if (current.isBlank()) return@forEach
+            val original = saved.entries.firstOrNull { it.value == current }?.key ?: current
+            grouped.getOrPut(original) { mutableListOf() }.add(target)
+            displayed.putIfAbsent(original, current)
+        }
+        return grouped.map { (original, group) ->
+            EditableRow(group, original, displayed[original].orEmpty())
+        }
     }
 
     @Composable
@@ -153,13 +156,18 @@ object ModifyTextMessageDisplay : SwitchFeature(),
                         .verticalScroll(rememberScrollState()),
                 ) {
                     rows.forEachIndexed { index, row ->
+                        Text(
+                            text = row.targets.first().label,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(bottom = 2.dp),
+                        )
                         TextField(
                             value = inputs[index],
                             onValueChange = { value ->
                                 inputs = inputs.toMutableList().also { it[index] = value }
                             },
                             label = { Text(stringResource(R.string.chat_modify_text_content)) },
-                            textStyle = MaterialTheme.typography.bodyMedium,
                             maxLines = 4,
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -195,17 +203,19 @@ object ModifyTextMessageDisplay : SwitchFeature(),
 
         rows.forEachIndexed { index, row ->
             val input = inputs[index]
-            if (input.isNotBlank() && input != row.current) row.views.forEach { it.text = input }
+            if (input.isNotBlank() && input != row.current) row.targets.forEach { it.write(input) }
         }
 
-        val context = rows.first().views.first().context
-        showToast(context, localizedChatString(R.string.chat_modify_text_saved))
+        showToast(
+            rows.first().targets.first().hostView.context,
+            localizedChatString(R.string.chat_modify_text_saved),
+        )
     }
 
     private fun revert(key: String, rows: List<EditableRow>) {
         overrides.remove(key)
         persistOverrides()
-        rows.forEach { row -> row.views.forEach { it.text = row.original } }
+        rows.forEach { row -> row.targets.forEach { it.write(row.original) } }
     }
 
     /** 微信重绑时会把文本刷回原文，这里在每次绑定后按原文匹配重新套上替换。 */
@@ -219,13 +229,10 @@ object ModifyTextMessageDisplay : SwitchFeature(),
     }
 
     private fun reapplyOverrides(view: View, saved: Map<String, String>) {
-        view.findViewsWhich { it is TextView && it.text?.isNotBlank() == true }
-            .forEach { text ->
-                val target = text as TextView
-                val current = target.text.toString()
-                val replacement = saved[current] ?: return@forEach
-                if (current != replacement) target.text = replacement
-            }
+        collectTargets(view).forEach { target ->
+            val replacement = saved[target.current] ?: return@forEach
+            target.write(replacement)
+        }
     }
 
     /** 系统消息等场景 serverId 为 0，退回本地 msgId。 */
@@ -248,4 +255,75 @@ object ModifyTextMessageDisplay : SwitchFeature(),
         }
         overridesPref = DefaultJson.encodeToString<Map<String, Map<String, String>>>(overrides)
     }
+
+    /** 真机上报：红包、转账、文件卡片等自定义气泡的文本宿主各不相同，这里统一成一个写入口。 */
+    private interface TextTarget {
+        val hostView: View
+        val current: String
+        val label: String
+        fun write(value: String)
+    }
+
+    private class TextViewTarget(override val hostView: TextView) : TextTarget {
+        override val current get() = hostView.text.toString()
+        override val label get() = hostView.javaClass.simpleName + "#" + entryName(hostView)
+        override fun write(value: String) {
+            hostView.text = value
+        }
+    }
+
+    /**
+     * 纯文本、拍一拍这类气泡的正文不在子 TextView 上，而是条目 View 自己的
+     * CharSequence 字段 + 同名 setter（旧版实现通路），保留为兜底。
+     */
+    private class HostFieldTarget(override val hostView: View) : TextTarget {
+        private val field = hostView.reflekt().firstFieldOrNull {
+            type = CharSequence::class
+            superclass()
+        }
+
+        override val current get() = field?.get()?.toString().orEmpty()
+        override val label get() = "field:" + hostView.javaClass.simpleName
+        override fun write(value: String) {
+            hostView.reflekt().firstMethod {
+                parameters(CharSequence::class)
+            }.invoke(value)
+        }
+    }
+
+    private class EditableRow(
+        val targets: List<TextTarget>,
+        val original: String,
+        val current: String,
+    )
+
+    private fun collectTargets(root: View): List<TextTarget> {
+        val labels = root.findViewsWhich { it is TextView && it.text?.isNotBlank() == true }
+            .map { TextViewTarget(it as TextView) }
+            .toList()
+        if (labels.isNotEmpty()) return labels
+
+        val host = HostFieldTarget(root)
+        return if (host.current.isBlank()) emptyList() else listOf(host)
+    }
+
+    /** 每次打开弹窗记录一次气泡子树，用于定位没有 TextView 宿主的文本行。 */
+    private fun logSubtree(root: View) {
+        val dump = buildString {
+            append("bubble root=").append(root.javaClass.name)
+            root.allViews.forEach { child ->
+                append('\n').append(child.javaClass.simpleName)
+                    .append(" id=").append(entryName(child))
+                    .append(" vis=").append(child.visibility)
+                if (child is TextView) append(" text=").append(child.text.take(40))
+            }
+        }
+        WeLogger.i(TAG, dump)
+    }
+}
+
+private fun entryName(view: View): String {
+    if (view.id == View.NO_ID) return "none"
+    return runCatching { view.resources.getResourceEntryName(view.id) }
+        .getOrDefault(view.id.toString())
 }
