@@ -46,12 +46,14 @@ fun <T> ExpressiveOptionDropdown(
         expanded = expanded,
         onDismissRequest = onDismissRequest,
     ) {
-        Column(
-            Modifier
-                .heightIn(max = (MENU_ITEM_HEIGHT_DP * maxVisibleItems).dp)
-                .verticalScroll(rememberScrollState()),
-        ) {
-            DropdownMenuGroup(shapes = MenuDefaults.groupShapes()) {
+        DropdownMenuGroup(shapes = MenuDefaults.groupShapes()) {
+            // 限高与滚动要放在 group 里面：group 本身就是那个圆角 Surface，
+            // 把它整个塞进滚动容器会在滚动时把圆角切成直角。
+            Column(
+                Modifier
+                    .heightIn(max = (MENU_ITEM_HEIGHT_DP * maxVisibleItems).dp)
+                    .verticalScroll(rememberScrollState()),
+            ) {
                 options.forEachIndexed { index, option ->
                     SelectableDropdownMenuItem(
                         selected = option.value == value,
